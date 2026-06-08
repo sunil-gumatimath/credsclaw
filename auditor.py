@@ -812,7 +812,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--resume", action="store_true", help="Resume from previous checkpoint")
     parser.add_argument("--checkpoint-file", type=str, default="progress.json", help="Checkpoint file path")
     parser.add_argument("--timeout", type=int, default=DEFAULT_VALIDATION_TIMEOUT, help="Validation timeout in seconds")
-    parser.add_argument("--providers", type=str, default="openai,anthropic", help="Providers (openai,anthropic,google,aws,stripe,github,slack,twilio,sendgrid)")
+    parser.add_argument("--providers", type=str, default="openai,anthropic", help="Providers (openai,anthropic,google,aws,stripe,github,slack,twilio,sendgrid,huggingface,cloudflare,supabase,azure)")
 
     parser.add_argument("--max-concurrency", type=int, default=DEFAULT_MAX_CONCURRENCY, help="Max concurrent item processors")
     parser.add_argument("--checkpoint-interval", type=int, default=DEFAULT_CHECKPOINT_INTERVAL, help="Save checkpoint every N processed items")
@@ -874,7 +874,7 @@ async def main() -> None:
             "twilio": ("Twilio", "SK", TWILIO_API_KEY_PATTERN),
             "sendgrid": ("SendGrid", "SG.", SENDGRID_API_KEY_PATTERN),
             "huggingface": ("HuggingFace", "hf_", HUGGINGFACE_KEY_PATTERN),
-            "cloudflare": ("Cloudflare", "", CLOUDFLARE_TOKEN_PATTERN),
+            "cloudflare": ("Cloudflare", "cfk_", CLOUDFLARE_TOKEN_PATTERN),
             "supabase": ("Supabase", "sbp_", SUPABASE_KEY_PATTERN),
             "azure": ("Azure", "Endpoint=sb", AZURE_CONNECTION_STRING_PATTERN),
         }
