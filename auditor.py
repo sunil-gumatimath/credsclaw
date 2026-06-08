@@ -26,23 +26,23 @@ try:
 except ImportError:
     tqdm = None
 
-# Provider patterns
-ANTHROPIC_KEY_PATTERN = r"\bsk-ant-(?:api03|api1|api2)-[A-Za-z0-9]{40,}\b"
-OPENAI_KEY_PATTERN = r"\b(?:sk-[A-Za-z0-9]{48}|sk-admin-[A-Za-z0-9]{58,74}|sk-proj-[A-Za-z0-9_-]{100,}|sk-svcacct-[A-Za-z0-9_-]{20,})\b"
-GOOGLE_AI_KEY_PATTERN = r"\bAIza[A-Za-z0-9_-]{35}\b"
+# Provider patterns (updated June 2026)
+ANTHROPIC_KEY_PATTERN = r"\bsk-ant-(?:api0[1-3]|oat01|admin)-[A-Za-z0-9_-]{40,}\b"
+OPENAI_KEY_PATTERN = r"\b(?:sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,100}T3BlbkFJ[A-Za-z0-9_-]{20,100}|sk-[A-Za-z0-9]{48})\b"
+GOOGLE_AI_KEY_PATTERN = r"\b(?:AIza[A-Za-z0-9_-]{35}|AQ\.[A-Za-z0-9_-]{35,})\b"
 
 # Additional provider patterns
-AWS_ACCESS_KEY_PATTERN = r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"
+AWS_ACCESS_KEY_PATTERN = r"\b(?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16,}\b"
 AWS_SECRET_KEY_PATTERN = r"\b(?i)aws_secret_access_key[\s:=]+['\"]?([A-Za-z0-9/+=]{40})['\"]?\b"
-STRIPE_KEY_PATTERN = r"\b(?:sk_(?:live|test)_[0-9a-zA-Z]{24,}|rk_(?:live|test)_[0-9a-zA-Z]{24,}|whsec_[0-9a-zA-Z]{48,})\b"
-GITHUB_TOKEN_PATTERN = r"\b(?:ghp_[0-9a-zA-Z]{40}|gho_[0-9a-zA-Z]{36}|ghs_[0-9a-zA-Z]{36}|ghr_[0-9a-zA-Z]{36}|ghu_[0-9a-zA-Z]{36}|github_pat_[0-9a-zA-Z]{22}_[0-9a-zA-Z]{59})\b"
-SLACK_TOKEN_PATTERN = r"\b(?:xox[baprs]-[0-9]{10,13}-[0-9]{10,13}-[0-9a-zA-Z]{24,}|hooks\.slack\.com/services/[A-Za-z0-9/]+?)\b"
+STRIPE_KEY_PATTERN = r"\b(?:pk_(?:live|test)_[0-9a-zA-Z]{24,}|sk_(?:live|test)_[0-9a-zA-Z]{24,}|rk_(?:live|test)_[0-9a-zA-Z]{24,}|whsec_[0-9a-zA-Z]{48,})\b"
+GITHUB_TOKEN_PATTERN = r"\b(?:ghp_[0-9a-zA-Z]{40}|gho_[0-9a-zA-Z]{36}|ghs_[0-9a-zA-Z]{36,200}|ghr_[0-9a-zA-Z]{36}|ghu_[0-9a-zA-Z]{36}|github_pat_[0-9a-zA-Z]{22}_[0-9a-zA-Z]{59})\b"
+SLACK_TOKEN_PATTERN = r"\b(?:xox[baprsoe]-[0-9]{10,13}-[0-9]{10,13}-[0-9a-zA-Z]{24,}|xapp-[0-9a-zA-Z-]{24,}|xwfp-[0-9a-zA-Z-]{24,}|hooks\.slack\.com/services/[A-Za-z0-9/]+?)\b"
 TWILIO_API_KEY_PATTERN = r"\b(?:SK[0-9a-fA-F]{32}|AC[0-9a-fA-F]{32})\b"
 SENDGRID_API_KEY_PATTERN = r"\bSG\.[0-9a-zA-Z\.\-_]{22}\.[0-9a-zA-Z\.\-_]{43}\b"
 
 HUGGINGFACE_KEY_PATTERN = r"\bhf_[a-zA-Z0-9]{34}\b"
-CLOUDFLARE_TOKEN_PATTERN = r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b"
-SUPABASE_KEY_PATTERN = r"\b(?:sbp_|sb_secret_)[a-zA-Z0-9]{36}\b"
+CLOUDFLARE_TOKEN_PATTERN = r"\b(?:cfk_|cfut_|cfat_)[A-Za-z0-9]{40}[0-9a-f]{8}\b"
+SUPABASE_KEY_PATTERN = r"\b(?:sb_publishable_[A-Za-z0-9]{22}_[0-9a-f]{8}|sb_secret_[A-Za-z0-9]{22}_[0-9a-f]{8}|sbp_[a-zA-Z0-9]{36}|sb_secret_[a-zA-Z0-9]{36})\b"
 AZURE_CONNECTION_STRING_PATTERN = r"Endpoint=sb://[^;]+;SharedAccessKeyName=[^;]+;SharedAccessKey=[A-Za-z0-9+/=]+"
 
 DEFAULT_VALIDATION_TIMEOUT = 10
@@ -450,6 +450,110 @@ class APIAuditor:
             return False
 
     async def validate_google_key(self, key: str) -> Optional[bool]:
+        # No reliable lightweight validation endpoint for Google AI keys
+        return None
+
+    async def validate_stripe_key(self, key: str) -> bool:
+        try:
+            timeout = aiohttp.ClientTimeout(total=self.args.timeout)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(
+                    "https://api.stripe.com/v1/account",
+                    headers={"Authorization": f"Bearer {key}"},
+                ) as response:
+                    return response.status == 200
+        except Exception:
+            return False
+
+    async def validate_github_key(self, key: str) -> bool:
+        try:
+            timeout = aiohttp.ClientTimeout(total=self.args.timeout)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(
+                    "https://api.github.com/user",
+                    headers={"Authorization": f"Bearer {key}", "Accept": "application/vnd.github+json"},
+                ) as response:
+                    return response.status == 200
+        except Exception:
+            return False
+
+    async def validate_slack_key(self, key: str) -> bool:
+        try:
+            timeout = aiohttp.ClientTimeout(total=self.args.timeout)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(
+                    "https://slack.com/api/auth.test",
+                    headers={"Authorization": f"Bearer {key}"},
+                ) as response:
+                    data = await response.json()
+                    return data.get("ok") is True
+        except Exception:
+            return False
+
+    async def validate_sendgrid_key(self, key: str) -> bool:
+        try:
+            timeout = aiohttp.ClientTimeout(total=self.args.timeout)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(
+                    "https://api.sendgrid.com/v3/user/profile",
+                    headers={"Authorization": f"Bearer {key}"},
+                ) as response:
+                    return response.status == 200
+        except Exception:
+            return False
+
+    async def validate_huggingface_key(self, key: str) -> bool:
+        try:
+            timeout = aiohttp.ClientTimeout(total=self.args.timeout)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(
+                    "https://huggingface.co/api/whoami-v2",
+                    headers={"Authorization": f"Bearer {key}"},
+                ) as response:
+                    return response.status == 200
+        except Exception:
+            return False
+
+    async def validate_cloudflare_key(self, key: str) -> bool:
+        try:
+            timeout = aiohttp.ClientTimeout(total=self.args.timeout)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(
+                    "https://api.cloudflare.com/client/v4/user/tokens/verify",
+                    headers={"Authorization": f"Bearer {key}"},
+                ) as response:
+                    data = await response.json()
+                    return data.get("success") is True
+        except Exception:
+            return False
+
+    async def validate_supabase_key(self, key: str) -> bool:
+        try:
+            timeout = aiohttp.ClientTimeout(total=self.args.timeout)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(
+                    "https://api.supabase.com/v1/projects",
+                    headers={"Authorization": f"Bearer {key}"},
+                ) as response:
+                    return response.status == 200
+        except Exception:
+            return False
+
+    async def validate_aws_key(self, key: str) -> Optional[bool]:
+        # AWS keys require both Access Key ID (AKIA/ASIA) AND Secret Access Key.
+        # The scanner only captures the Access Key ID. Cannot validate without the secret.
+        return None
+
+    async def validate_twilio_key(self, key: str) -> Optional[bool]:
+        # Twilio has two key types:
+        # - Account SID (AC...) requires Auth Token for validation
+        # - API Key (SK...) requires API Secret for validation
+        # Scanner captures only one part. Cannot validate without the pair.
+        return None
+
+    async def validate_azure_key(self, key: str) -> Optional[bool]:
+        # Azure Service Bus connection strings require parsing and SDK-based validation.
+        # No simple REST endpoint exists for connection string validation.
         return None
 
     async def batch_validate_keys(self, keys_data: List[Tuple[Dict[str, Any], str]], provider: str) -> None:
@@ -457,6 +561,16 @@ class APIAuditor:
             "OpenAI": self.validate_openai_key,
             "Anthropic": self.validate_anthropic_key,
             "Google": self.validate_google_key,
+            "Stripe": self.validate_stripe_key,
+            "GitHub": self.validate_github_key,
+            "Slack": self.validate_slack_key,
+            "SendGrid": self.validate_sendgrid_key,
+            "HuggingFace": self.validate_huggingface_key,
+            "Cloudflare": self.validate_cloudflare_key,
+            "Supabase": self.validate_supabase_key,
+            "AWS": self.validate_aws_key,
+            "Twilio": self.validate_twilio_key,
+            "Azure": self.validate_azure_key,
         }
         validator = validation_map.get(provider)
         if not validator:
@@ -675,6 +789,105 @@ class APIAuditor:
         self.progress.save_progress()
         logger.info("Completed %s commits audit: %s total unique keys found", provider, len(self.progress.found_keys))
 
+    async def audit_local_directory(self, provider: str, pattern: str, directory: str) -> None:
+        """Scan a local directory for exposed API keys."""
+        logger.info("Auditing %s API keys in local directory: %s", provider, directory)
+        dir_path = Path(directory)
+        if not dir_path.is_dir():
+            logger.error("Directory not found: %s", directory)
+            return
+
+        skip_extensions = {
+            ".pyc", ".pyo", ".pyd", ".so", ".dll", ".exe", ".bin",
+            ".jpg", ".jpeg", ".png", ".gif", ".ico", ".bmp", ".svg",
+            ".zip", ".tar", ".gz", ".bz2", ".7z", ".rar",
+            ".pdf", ".doc", ".docx", ".xls", ".xlsx",
+            ".mp3", ".mp4", ".avi", ".mov",
+            ".woff", ".woff2", ".ttf", ".eot",
+            ".class", ".o", ".obj",
+        }
+
+        allowed_extensions = None
+        if self.args.extensions:
+            allowed_extensions = {
+                f".{ext.lstrip('.')}" for ext in parse_csv_arg(self.args.extensions)
+            }
+
+        all_files: List[Path] = []
+        for file_path in dir_path.rglob("*"):
+            if not file_path.is_file():
+                continue
+            if any(part.startswith(".") for part in file_path.relative_to(dir_path).parts):
+                continue
+            if file_path.suffix.lower() in skip_extensions:
+                continue
+            if allowed_extensions and file_path.suffix.lower() not in allowed_extensions:
+                continue
+            all_files.append(file_path)
+
+        if self.args.dry_run:
+            logger.info("[Dry run] %s files found for %s in %s", len(all_files), provider, directory)
+            return
+
+        keys_to_validate: List[Tuple[Dict[str, Any], str]] = []
+
+        async def process_file(file_path: Path) -> None:
+            identifier = str(file_path)
+
+            async with self.lock:
+                if self.progress.is_processed(identifier):
+                    return
+
+            try:
+                content = file_path.read_text(encoding="utf-8", errors="ignore")
+            except Exception as exc:
+                logger.debug("Failed to read %s: %s", file_path, exc)
+                async with self.lock:
+                    self.progress.mark_processed(identifier)
+                return
+
+            local_candidates = self.extract_candidates(content, pattern)
+
+            async with self.lock:
+                for key, _context, confidence, severity in local_candidates:
+                    key_hash = fingerprint_key(key)
+                    if self.progress.is_duplicate_hash(key_hash):
+                        continue
+                    key_data: Dict[str, Any] = {
+                        "provider": provider,
+                        "key_hash": key_hash,
+                        "key_masked": mask_key(key),
+                        "repo": "local",
+                        "path": str(file_path.relative_to(dir_path)),
+                        "url": f"file://{file_path}",
+                        "timestamp": safe_utc_now(),
+                        "confidence": round(confidence, 2),
+                        "severity": severity,
+                        "valid": None,
+                    }
+                    if self.args.store_raw_keys:
+                        key_data["key"] = key
+                    self.progress.add_key(key_data)
+                    self._incr_stat(provider, "local")
+                    keys_to_validate.append((key_data, key))
+                self.progress.mark_processed(identifier)
+                if len(self.progress.processed) % self.args.checkpoint_interval == 0:
+                    self.progress.save_progress()
+
+        tasks = [asyncio.create_task(process_file(fp)) for fp in all_files]
+        iterator = asyncio.as_completed(tasks)
+        if tqdm:
+            iterator = tqdm(iterator, total=len(tasks), desc=f"Scanning {provider} (local)")
+        for coro in iterator:
+            await coro
+
+        if self.args.validate and keys_to_validate:
+            logger.info("Validating %s %s keys...", len(keys_to_validate), provider)
+            await self.batch_validate_keys(keys_to_validate, provider)
+
+        self.progress.save_progress()
+        logger.info("Completed %s local audit: %s total unique keys found", provider, len(self.progress.found_keys))
+
 
 def maybe_encrypt_bytes(data: bytes, encryption_key: str) -> bytes:
     try:
@@ -800,7 +1013,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repo", type=str, default="", help="Specific repository to search (format: owner/repo)")
     parser.add_argument("--extensions", type=str, default="", help="File extensions to search (comma-separated, e.g., py,js,env)")
     parser.add_argument("--dir", type=str, help="Local directory path to scan (for mode=local)")
-    parser.add_argument("--mode", type=str, choices=["code", "commits"], default="code", help="Search mode: code or commits")
+    parser.add_argument("--mode", type=str, choices=["code", "commits", "local"], default="code", help="Search mode: code, commits, or local")
     parser.add_argument("--validate", action="store_true", help="Validate found API keys")
     parser.add_argument("--output-format", type=str, choices=["json", "csv", "txt"], default="json", help="Output format")
     parser.add_argument("--output-file", type=str, default="audit_results.json", help="Output file path")
@@ -847,9 +1060,12 @@ async def main() -> None:
     logger.info("=" * 60)
 
     try:
-        token = get_github_token()
-        if not token:
-            raise ValueError("GitHub token is required")
+        if args.mode == "local":
+            token = os.getenv("GITHUB_TOKEN", "")
+        else:
+            token = get_github_token()
+            if not token:
+                raise ValueError("GitHub token is required")
 
         if not args.resume and Path(args.checkpoint_file).exists():
             logger.warning("Removing existing checkpoint file: %s", args.checkpoint_file)
@@ -888,7 +1104,11 @@ async def main() -> None:
                     continue
                 name, search_term, pattern = config
                 query = f"{search_term}{query_suffix}"
-                if args.mode == "commits":
+                if args.mode == "local":
+                    if not args.dir:
+                        raise ValueError("--dir is required for local mode")
+                    await auditor.audit_local_directory(name, pattern, args.dir)
+                elif args.mode == "commits":
                     await auditor.audit_commit_messages(name, query, pattern)
                 else:
                     await auditor.audit_api_keys(name, query, pattern)
