@@ -1,83 +1,73 @@
 # Exposed API Key Auditor
 
-Async Python CLI to scan GitHub code or commit messages for exposed API keys (OpenAI, Anthropic, Google AI, AWS, Stripe, GitHub, Slack, Twilio, SendGrid, HuggingFace, Cloudflare, Supabase, Azure), with resumable checkpoints, optional validation, safer storage defaults, and **confidence-based severity scoring**.
+Async Python CLI to scan GitHub repositories (code search, commit messages) or local directories for exposed API keys and secrets. Features resumable checkpoints, optional live validation, confidence-based severity scoring, and encrypted output.
 
 ## Features
 
-- Scans GitHub `code` search or `commits` search.
-- Provider support:
-  - OpenAI (`sk-...` / `sk-proj-...` / `sk-admin-...` / `sk-svcacct-...`)
-  - Anthropic (`sk-ant-api03-...`, `sk-ant-api1-...`, `sk-ant-api2-...`)
-  - Google AI (`AIza...`)
-  - AWS (`AKIA...`, `ASIA...`)
-  - Stripe (`sk_live_...`, `sk_test_...`, `rk_live_...`, `rk_test_...`, `whsec_...`)
-  - GitHub (`ghp_...`, `gho_...`, `ghs_...`, `ghr_...`, `ghu_...`, `github_pat_...`)
-  - Slack (`xoxb-...`, `xoxp-...`, `xoxa-...`, `xoxr-...`, `xoxs-...`)
-  - Twilio (`SK...`, `AC...`)
-  - SendGrid (`SG.xxx.yyy`)
-  - HuggingFace (`hf_...`)
-  - Cloudflare (UUID tokens)
-  - Supabase (`sbp_...`, `sb_secret_...`)
-  - Azure (`Endpoint=sb://...`)
-- **Confidence-based severity scoring** (CRITICAL/HIGH/MEDIUM/LOW) with tunable threshold
-- Async + bounded concurrency for faster scans.
-- Checkpoint/resume support (`progress.json`).
-- Optional key validation:
-  - OpenAI: yes
-  - Anthropic: yes
-  - Google AI: no reliable lightweight validation endpoint
-- Context/noise filtering to reduce false positives.
-- Optional allow/deny regex filters.
-- Export to JSON/CSV/TXT with confidence and severity fields.
-- Optional encrypted output using Fernet.
+- **Scan targets**: GitHub `code` search, GitHub `commits` search, or local directory (`--mode code | commits | local`)
+- **Provider support**:
+
+| Provider | Key Patterns |
+|---|---|
+| OpenAI | Classic (`sk-{48 alnum}`), project (`sk-proj-...`), service account (`sk-svcacct-...`), admin (`sk-admin-...`) |
+| Anthropic | `sk-ant-api01-...`, `sk-ant-api02-...`, `sk-ant-api03-...`, `sk-ant-oat01-...`, `sk-ant-admin-...` |
+| Google AI | `AIza{35 chars}`, `AQ.{35+ chars}` |
+| AWS | Access Key IDs: `AKIA`, `ASIA`, `ABIA`, `ACCA` (+16 chars) — secret key via env-var pattern |
+| Stripe | Secret keys (`sk_live_`, `sk_test_`), restricted keys (`rk_live_`, `rk_test_`), publishable keys (`pk_live_`, `pk_test_`), webhook secrets (`whsec_`) |
+| GitHub | `ghp_`, `gho_`, `ghs_`, `ghr_`, `ghu_`, `github_pat_` |
+| Slack | Bot/user tokens (`xoxb-`, `xoxp-`, `xoxa-`, `xoxr-`, `xoxs-`, `xapp-`), webhook URLs (`hooks.slack.com/services/...`) |
+| Twilio | Account SID (`AC...`), API Key (`SK...`) |
+| SendGrid | `SG.{22 chars}.{43 chars}` |
+| HuggingFace | `hf_{34 alnum}` |
+| Cloudflare | `cfk_`, `cfut_`, `cfat_` prefixed tokens |
+| Supabase | `sbp_`, `sb_secret_`, `sb_publishable_` prefixed tokens |
+| Azure | Service Bus connection strings (`Endpoint=sb://...`) |
+
+- **Confidence-based severity scoring** — each finding gets a score 0–100 with severity CRITICAL / HIGH / MEDIUM / LOW
+- **Tunable confidence threshold** — set minimum score with `--confidence-threshold` (default: 50.0)
+- **Async + bounded concurrency** for fast scans
+- **Checkpoint/resume** via `progress.json` — incremental scans with `--resume --since-checkpoint`
+- **Optional live validation** — test discovered keys against provider APIs where supported
+- **Context/noise filtering** — built-in noise detection (placeholder keys, examples, dummies) plus custom allow/deny regex filters
+- **Multiple export formats** — JSON, CSV, or TXT
+- **Optional Fernet encryption** for exported results
 
 ## Confidence Scoring
 
-Each detected key is assigned a **confidence score (0-100)** based on multiple factors:
+Each detected key is assigned a **confidence score (0–100)** based on multiple factors:
 
-- **Entropy** (30 pts): Randomness/complexity of the key
-- **Context patterns** (25 pts): Presence of keywords like `api_key`, `secret`, `token`
-- **Noise filter** (20 pts): Penalizes placeholder/example contexts
-- **Length** (15 pts): Longer keys score higher
-- **Character diversity** (10 pts): More unique characters = higher score
+| Factor | Max Points | Description |
+|---|---|---|
+| Entropy | 30 | Shannon entropy of the key value (randomness) |
+| Context patterns | 25 | Keywords like `api_key`, `secret`, `token` in surrounding text |
+| Noise filter | 20 | Full penalty if context contains placeholder/example language |
+| Length | 15 | Longer keys score higher (4 thresholds) |
+| Character diversity | 10 | Ratio of unique to total characters |
 
-Keys are categorized by severity:
-- **CRITICAL**: Score ≥ 80 (high-confidence production secrets)
-- **HIGH**: Score 60-79
-- **MEDIUM**: Score 40-59
-- **LOW**: Score < 40
+Severity levels:
 
-Use `--confidence-threshold` to set the minimum score to report (default: 50.0):
+| Severity | Score Range |
+|---|---|
+| CRITICAL | >= 80 |
+| HIGH | 60–79 |
+| MEDIUM | 40–59 |
+| LOW | < 40 |
 
-```bash
-# Only report high-confidence findings
-python auditor.py --confidence-threshold 70
+The summary report includes a severity breakdown and average confidence across all findings.
 
-# Lower threshold for broader catch (more false positives)
-python auditor.py --confidence-threshold 30 --dry-run
-```
+## Key Safety
 
-The summary report includes severity breakdown and average confidence score.
+By default, raw keys are **never** stored. Stored fields are:
 
-By default, raw keys are **not** stored.
+- `key_hash` — SHA-256 of the key (for deduplication)
+- `key_masked` — partial view (`first8...last4`)
 
-Stored fields are:
-- `key_hash` (SHA-256)
-- `key_masked` (partial view only)
-
-Where stored:
-- Checkpoint: `progress.json`
-- Export output: file from `--output-file` (default `audit_results.json`)
-
-Raw keys are stored only if you explicitly pass:
-- `--store-raw-keys` (unsafe)
+This applies to both checkpoint (`progress.json`) and export output. Pass `--store-raw-keys` only when you explicitly need the plaintext value (unsafe).
 
 ## Requirements
 
-- Python 3.11+ recommended
-- GitHub Personal Access Token in `GITHUB_TOKEN`
-
-Install dependencies:
+- Python 3.11+ (recommended)
+- GitHub Personal Access Token in `GITHUB_TOKEN` env var (not required for `--mode local`)
 
 ```bash
 python -m pip install -r requirements.txt
@@ -86,189 +76,160 @@ python -m pip install -r requirements.txt
 ## Setup
 
 1. Copy `.env.example` to `.env`.
-2. Set:
-   - `GITHUB_TOKEN=your_token`
+2. Set `GITHUB_TOKEN=your_token`.
 3. Optional:
-   - `OUTPUT_ENCRYPTION_KEY=...` for encrypted exports.
-   - `GITHUB_AUDITOR_DISABLE_FILE_LOG=1` to disable `audit.log`.
+   - `OUTPUT_ENCRYPTION_KEY` — for `--encrypt-output`
+   - `GITHUB_AUDITOR_DISABLE_FILE_LOG=1` — disable `audit.log`
 
-## Quick start
-
-Basic run:
+## Quick Start
 
 ```bash
+# Basic run (defaults: mode=code, providers=openai,anthropic)
 python auditor.py
-```
 
-Dry run (search only, no findings export):
-
-```bash
+# Dry run — search only, no findings export
 python auditor.py --dry-run --providers openai,anthropic,google
-```
 
-Target a single repository:
-
-```bash
+# Target a single repository
 python auditor.py --repo owner/repo --providers openai,anthropic,google
-```
 
-Validate discovered keys:
-
-```bash
+# Validate discovered keys where supported
 python auditor.py --validate
-```
 
-High-throughput scan:
-
-```bash
+# High-throughput scan
 python auditor.py --max-concurrency 20 --checkpoint-interval 50
-```
 
-Scan with confidence threshold (only report high-confidence findings):
-
-```bash
+# Only report high-confidence findings
 python auditor.py --confidence-threshold 70 --providers openai,aws,stripe
-```
 
-Scan all available providers:
-
-```bash
+# Scan all available providers
 python auditor.py --providers openai,anthropic,google,aws,stripe,github,slack,twilio,sendgrid,huggingface,cloudflare,supabase,azure
 ```
 
-## Common commands
-
-Code mode with filters:
+## Common Commands
 
 ```bash
+# Code mode with filters
 python auditor.py --mode code --extensions py,js,env --language python --min-stars 50
-```
 
-Commit-message scan:
-
-```bash
+# Commit-message scan
 python auditor.py --mode commits --repo owner/repo
-```
 
-Incremental scan from last checkpoint time:
-
-```bash
+# Incremental scan — only items newer than last checkpoint
 python auditor.py --resume --since-checkpoint
-```
 
-Encrypted JSON export:
-
-```bash
+# Encrypted JSON export
 python auditor.py --encrypt-output --output-file results.enc
-```
 
-Allow/deny filtering:
-
-```bash
+# Allow/deny filtering
 python auditor.py --allow-patterns OPENAI_API_KEY,ANTHROPIC_API_KEY --deny-patterns example,dummy,mock
+
+# Local directory scan
+python auditor.py --mode local --dir /path/to/codebase --providers openai,github
 ```
 
-## CLI options
+## CLI Reference
 
-Core:
+### Core
 
-- `--repo`: target repository (`owner/repo`), default global search.
-- `--dir`: Local directory path to scan (required for local mode).
-- `--mode`: `code`, `commits`, or `local` (default `code`).
-- `--providers`: comma-separated providers (`openai,anthropic,google,aws,stripe,github,slack,twilio,sendgrid,huggingface,cloudflare,supabase,azure`).
-- `--extensions`: comma-separated file extensions (code mode only).
-- `--validate`: validate found keys where supported.
-- `--output-format`: `json`, `csv`, `txt`.
-- `--output-file`: export path.
-- `--resume`: continue from checkpoint.
-- `--checkpoint-file`: checkpoint path (default `progress.json`).
-- `--max-pages`: max GitHub result pages.
-- `--min-stars`: minimum repo stars.
-- `--language`: repo language filter.
-- `--updated-after`: repo updated after date (`YYYY-MM-DD`).
-- `--sort`: search sort mode (`indexed` or empty best-match mode).
-- `--timeout`: validation request timeout seconds.
+| Flag | Description | Default |
+|---|---|---|
+| `--repo` | Target repository (`owner/repo`). Omit for global search. | `""` (global) |
+| `--dir` | Local directory path to scan (required for `--mode local`). | -- |
+| `--mode` | Search mode: `code`, `commits`, or `local`. | `code` |
+| `--providers` | Comma-separated providers. | `openai,anthropic` |
+| `--extensions` | File extensions to search (`py,js,env` — code mode only). | `""` |
+| `--validate` | Validate found keys against provider APIs. | `false` |
+| `--output-format` | Export format: `json`, `csv`, `txt`. | `json` |
+| `--output-file` | Export path. | `audit_results.json` |
+| `--resume` | Continue from previous checkpoint. | `false` |
+| `--checkpoint-file` | Checkpoint path. | `progress.json` |
+| `--max-pages` | Max GitHub result pages to fetch. | unlimited |
+| `--min-stars` | Minimum repo stars filter. | none |
+| `--language` | Programming language filter. | none |
+| `--updated-after` | Repos updated after date (`YYYY-MM-DD`). | none |
+| `--sort` | Sort mode: `indexed` or empty (best-match). | `indexed` |
+| `--timeout` | Validation request timeout (seconds). | `10` |
 
-Performance/UX:
+### Performance / UX
 
-- `--max-concurrency`: concurrent item workers.
-- `--checkpoint-interval`: save progress every N processed items.
-- `--dry-run`: search only; do not fetch contents or export findings.
-- `--since-checkpoint`: only process items newer than checkpoint timestamp.
-- `--confidence-threshold`: minimum confidence score (0-100) to report a key (default: 50.0).
+| Flag | Description | Default |
+|---|---|---|
+| `--max-concurrency` | Concurrent item processors. | `10` |
+| `--checkpoint-interval` | Save progress every N items. | `25` |
+| `--dry-run` | Search only; skip content fetch and export. | `false` |
+| `--since-checkpoint` | Only process items newer than checkpoint timestamp. | `false` |
+| `--confidence-threshold` | Minimum confidence score (0–100) to report. | `50.0` |
 
-Security/filtering:
+### Security / Filtering
 
-- `--allow-patterns`: comma-separated regex list; if provided, matching context is prioritized.
-- `--deny-patterns`: comma-separated regex list; matched context is rejected.
-- `--store-raw-keys`: include raw keys in checkpoint/export (unsafe).
-- `--encrypt-output`: encrypt exported file with Fernet.
-- `--encryption-key`: Fernet key string (or use `OUTPUT_ENCRYPTION_KEY` env var).
+| Flag | Description |
+|---|---|
+| `--allow-patterns` | Comma-separated regex patterns; matching context is always accepted. |
+| `--deny-patterns` | Comma-separated regex patterns; matching context is rejected. |
+| `--store-raw-keys` | Include raw keys in checkpoint/export (unsafe). |
+| `--encrypt-output` | Encrypt exported file with Fernet. |
+| `--encryption-key` | Fernet key string (or use `OUTPUT_ENCRYPTION_KEY` env var). |
 
-## Output files
+## Validation Support
 
-- `progress.json`:
-  - processed identifiers
-  - findings
-  - dedupe hashes
-  - checkpoint timestamp
-- `audit.log`:
-  - runtime logs (unless disabled)
-- Export file:
-  - JSON/CSV/TXT or encrypted bytes if `--encrypt-output`
+When `--validate` is passed, discovered keys are tested against the respective provider API:
+
+| Provider | Validated | Method |
+|---|---|---|
+| OpenAI | Yes | `GET /v1/models` |
+| Anthropic | Yes | `GET /v1/models` |
+| Stripe | Yes | `GET /v1/account` |
+| GitHub | Yes | `GET /user` |
+| Slack | Yes | `POST /api/auth.test` |
+| SendGrid | Yes | `GET /v3/user/profile` |
+| HuggingFace | Yes | `GET /api/whoami-v2` |
+| Cloudflare | Yes | `GET /client/v4/user/tokens/verify` |
+| Supabase | Yes | `GET /v1/projects` |
+| Google AI | No | No reliable lightweight validation endpoint |
+| AWS | No | Requires both Access Key ID and Secret Access Key |
+| Twilio | No | Requires both Account SID/API Key and Auth Token/Secret |
+| Azure | No | Requires SDK-based connection string validation |
+
+## Output Files
+
+| File | Contents |
+|---|---|
+| `progress.json` | Processed identifiers, findings, deduplication hashes, checkpoint timestamp |
+| `audit.log` | Runtime logs (unless disabled via `GITHUB_AUDITOR_DISABLE_FILE_LOG`) |
+| `audit_results.json` (default) | Export — JSON, CSV, TXT, or encrypted `.enc` |
 
 ## Docker
 
-Build the image:
-
 ```bash
+# Build
 docker build -t api-key-auditor .
-```
 
-Run with your `.env` file and persist outputs in `docker-output/`:
-
-```bash
+# Run with .env and local output directory
 docker run --rm --env-file .env -v "${PWD}/docker-output:/work" api-key-auditor --dry-run --providers openai,anthropic,google
-```
 
-On Windows PowerShell, use:
-
-```powershell
-docker run --rm --env-file .env -v "${PWD}/docker-output:/work" api-key-auditor --dry-run --providers openai,anthropic,google
-```
-
-Or with Compose:
-
-```bash
+# Docker Compose
 docker compose run --rm auditor --dry-run --providers openai,anthropic,google
 ```
 
-Files such as `progress.json`, `audit.log`, and `audit_results.json` will be written under `docker-output/`.
+Output files (`progress.json`, `audit.log`, `audit_results.json`) are written to `docker-output/`.
 
 ## Testing
-
-Run tests:
 
 ```bash
 python -m pytest -q
 ```
 
-CI:
-- GitHub Actions workflow in `.github/workflows/ci.yml` runs tests on Python 3.11 and 3.12.
+CI runs on Python 3.11 and 3.12 (GitHub Actions — see `.github/workflows/ci.yml`).
 
 ## Troubleshooting
 
-- `ModuleNotFoundError: dotenv` or `No module named pytest`:
-  - `python -m pip install -r requirements.txt`
-- GitHub rate limits:
-  - use a valid PAT with appropriate scope
-  - reduce `--max-concurrency`
-  - set `--max-pages`
-- Empty results:
-  - broaden providers
-  - remove strict filters (`--language`, `--min-stars`, `--updated-after`)
+| Problem | Solution |
+|---|---|
+| `ModuleNotFoundError: dotenv` / `No module named pytest` | `python -m pip install -r requirements.txt` |
+| GitHub rate limits | Use a valid PAT with appropriate scope; reduce `--max-concurrency`; limit pages with `--max-pages` |
+| Empty results | Broaden providers; remove strict filters (`--language`, `--min-stars`, `--updated-after`) |
 
-## Responsible use
+## Responsible Use
 
-This tool is for authorized security auditing and responsible disclosure only.
-Do not use discovered credentials. Report exposures to repository owners/providers for revocation.
+This tool is intended for authorized security auditing and responsible disclosure only. Do not misuse discovered credentials. Report exposures to repository owners or providers for revocation.
