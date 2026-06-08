@@ -49,6 +49,8 @@ def _build_args(**overrides):
 
 def test_valid_anthropic_key():
     key = "sk-ant-api03-" + "abcdefghijklmnopqrstuvwxyz1234567890ABCDEFGHIJKLMNO"
+    # padded to 40+ chars after prefix to match real key format
+    key = "sk-ant-api03-" + ("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ" * 3)
     matches = re.findall(ANTHROPIC_KEY_PATTERN, key)
     assert len(matches) == 1
 
@@ -66,11 +68,11 @@ def test_invalid_anthropic_key():
 
 def test_valid_openai_formats():
     classic = "sk-" + "a" * 48
-    proj = "sk-proj-abcdefghijklmnopqrstuvwxyz"
-    live = "sk-live-abcdefghijklmnopqrstuvwxyz"
+    proj = "sk-proj-" + ("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890" * 3)
+    svcacct = "sk-svcacct-abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO"
     assert len(re.findall(OPENAI_KEY_PATTERN, classic)) == 1
     assert len(re.findall(OPENAI_KEY_PATTERN, proj)) == 1
-    assert len(re.findall(OPENAI_KEY_PATTERN, live)) == 1
+    assert len(re.findall(OPENAI_KEY_PATTERN, svcacct)) == 1
 
 
 def test_invalid_openai_key():
@@ -85,7 +87,7 @@ def test_valid_google_key():
 
 
 def test_valid_aws_key():
-    key = "AKIA" + "A" * 12
+    key = "AKIA" + "A" * 16
     assert len(re.findall(AWS_ACCESS_KEY_PATTERN, key)) == 1
 
 
@@ -103,7 +105,13 @@ def test_valid_stripe_key():
 
 
 def test_valid_github_token():
-    tokens = ["ghp_" + "a" * 36, "gho_" + "b" * 36, "ghs_" + "c" * 36]
+    tokens = [
+        "ghp_" + "a" * 40,
+        "gho_" + "b" * 36,
+        "ghs_" + "c" * 36,
+        "ghr_" + "d" * 36,
+        "github_pat_" + "e" * 22 + "_" + "f" * 59,
+    ]
     for token in tokens:
         assert len(re.findall(GITHUB_TOKEN_PATTERN, token)) == 1
 
@@ -214,12 +222,14 @@ def test_valid_huggingface_key():
     assert len(re.findall(HUGGINGFACE_KEY_PATTERN, key)) == 1
 
 def test_valid_cloudflare_token():
-    key = "A" * 40
+    key = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
     assert len(re.findall(CLOUDFLARE_TOKEN_PATTERN, key)) == 1
 
 def test_valid_supabase_key():
     key = "sbp_" + "b" * 36
+    secret_key = "sb_secret_" + "b" * 36
     assert len(re.findall(SUPABASE_KEY_PATTERN, key)) == 1
+    assert len(re.findall(SUPABASE_KEY_PATTERN, secret_key)) == 1
 
 def test_valid_azure_connection_string():
     key = "Endpoint=sb://my-namespace.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=ABCDEF12345+/="

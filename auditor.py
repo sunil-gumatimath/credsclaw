@@ -27,22 +27,22 @@ except Exception:
     tqdm = None
 
 # Provider patterns
-ANTHROPIC_KEY_PATTERN = r"\bsk-ant-[A-Za-z0-9_-]{50,}\b"
-OPENAI_KEY_PATTERN = r"\b(?:sk-[A-Za-z0-9]{48}|sk-(?:live|test)-[A-Za-z0-9]{24,}|sk-proj-[A-Za-z0-9_-]{20,})\b"
+ANTHROPIC_KEY_PATTERN = r"\bsk-ant-(?:api03|api1|api2)-[A-Za-z0-9]{40,}\b"
+OPENAI_KEY_PATTERN = r"\b(?:sk-[A-Za-z0-9]{48}|sk-admin-[A-Za-z0-9]{58,74}|sk-proj-[A-Za-z0-9_-]{100,}|sk-svcacct-[A-Za-z0-9_-]{20,})\b"
 GOOGLE_AI_KEY_PATTERN = r"\bAIza[A-Za-z0-9_-]{35}\b"
 
 # Additional provider patterns
-AWS_ACCESS_KEY_PATTERN = r"\bAKIA[0-9A-Z]{12}\b"
+AWS_ACCESS_KEY_PATTERN = r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"
 AWS_SECRET_KEY_PATTERN = r"\b(?i)aws_secret_access_key[\s:=]+['\"]?([A-Za-z0-9/+=]{40})['\"]?\b"
-STRIPE_KEY_PATTERN = r"\bsk_(?:live|test)_[0-9a-zA-Z]{24,}\b"
-GITHUB_TOKEN_PATTERN = r"\bgh[poas]_[0-9a-zA-Z]{36}\b"
-SLACK_TOKEN_PATTERN = r"\bxox[baprs]-[0-9]{10,13}-[0-9]{10,13}-[0-9a-zA-Z]{24,}\b"
-TWILIO_API_KEY_PATTERN = r"\bSK[0-9a-fA-F]{32}\b"
+STRIPE_KEY_PATTERN = r"\b(?:sk_(?:live|test)_[0-9a-zA-Z]{24,}|rk_(?:live|test)_[0-9a-zA-Z]{24,}|whsec_[0-9a-zA-Z]{48,})\b"
+GITHUB_TOKEN_PATTERN = r"\b(?:ghp_[0-9a-zA-Z]{40}|gho_[0-9a-zA-Z]{36}|ghs_[0-9a-zA-Z]{36}|ghr_[0-9a-zA-Z]{36}|ghu_[0-9a-zA-Z]{36}|github_pat_[0-9a-zA-Z]{22}_[0-9a-zA-Z]{59})\b"
+SLACK_TOKEN_PATTERN = r"\b(?:xox[baprs]-[0-9]{10,13}-[0-9]{10,13}-[0-9a-zA-Z]{24,}|hooks\.slack\.com/services/[A-Za-z0-9/]+?)\b"
+TWILIO_API_KEY_PATTERN = r"\b(?:SK[0-9a-fA-F]{32}|AC[0-9a-fA-F]{32})\b"
 SENDGRID_API_KEY_PATTERN = r"\bSG\.[0-9a-zA-Z\.\-_]{22}\.[0-9a-zA-Z\.\-_]{43}\b"
 
 HUGGINGFACE_KEY_PATTERN = r"\bhf_[a-zA-Z0-9]{34}\b"
-CLOUDFLARE_TOKEN_PATTERN = r"\b[A-Za-z0-9_-]{40}\b"
-SUPABASE_KEY_PATTERN = r"\bsbp_[a-zA-Z0-9]{36}\b"
+CLOUDFLARE_TOKEN_PATTERN = r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b"
+SUPABASE_KEY_PATTERN = r"\b(?:sbp_|sb_secret_)[a-zA-Z0-9]{36}\b"
 AZURE_CONNECTION_STRING_PATTERN = r"Endpoint=sb://[^;]+;SharedAccessKeyName=[^;]+;SharedAccessKey=[A-Za-z0-9+/=]+"
 
 DEFAULT_VALIDATION_TIMEOUT = 10
@@ -873,10 +873,10 @@ async def main() -> None:
             "slack": ("Slack", "xoxb-", SLACK_TOKEN_PATTERN),
             "twilio": ("Twilio", "SK", TWILIO_API_KEY_PATTERN),
             "sendgrid": ("SendGrid", "SG.", SENDGRID_API_KEY_PATTERN),
-    "huggingface": ("HuggingFace", "hf_", HUGGINGFACE_KEY_PATTERN),
-    "cloudflare": ("Cloudflare", "", CLOUDFLARE_TOKEN_PATTERN),
-    "supabase": ("Supabase", "sbp_", SUPABASE_KEY_PATTERN),
-    "azure": ("Azure", "Endpoint=sb", AZURE_CONNECTION_STRING_PATTERN),
+            "huggingface": ("HuggingFace", "hf_", HUGGINGFACE_KEY_PATTERN),
+            "cloudflare": ("Cloudflare", "", CLOUDFLARE_TOKEN_PATTERN),
+            "supabase": ("Supabase", "sbp_", SUPABASE_KEY_PATTERN),
+            "azure": ("Azure", "Endpoint=sb", AZURE_CONNECTION_STRING_PATTERN),
         }
         selected = [p.strip().lower() for p in args.providers.split(",") if p.strip()]
 

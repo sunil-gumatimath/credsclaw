@@ -6,19 +6,19 @@ Async Python CLI to scan GitHub code or commit messages for exposed API keys (Op
 
 - Scans GitHub `code` search or `commits` search.
 - Provider support:
-  - OpenAI (`sk-...`, `sk-proj-...`, `sk-live-...`, `sk-test-...`)
-  - Anthropic (`sk-ant-...`)
+  - OpenAI (`sk-...` / `sk-proj-...` / `sk-admin-...` / `sk-svcacct-...`)
+  - Anthropic (`sk-ant-api03-...`, `sk-ant-api1-...`, `sk-ant-api2-...`)
   - Google AI (`AIza...`)
-  - AWS (`AKIA...`)
-  - Stripe (`sk_live_...`, `sk_test_...`)
-  - GitHub (`ghp_...`, `gho_...`, `ghs_...`)
-  - Slack (`xoxb-...`, `xoxp-...`, `xoxa-...`, `xoxr-...`)
-  - Twilio (`SK...`)
-  - SendGrid, HuggingFace, Cloudflare, Supabase, Azure (`SG.xxx.yyy`)
+  - AWS (`AKIA...`, `ASIA...`)
+  - Stripe (`sk_live_...`, `sk_test_...`, `rk_live_...`, `rk_test_...`, `whsec_...`)
+  - GitHub (`ghp_...`, `gho_...`, `ghs_...`, `ghr_...`, `ghu_...`, `github_pat_...`)
+  - Slack (`xoxb-...`, `xoxp-...`, `xoxa-...`, `xoxr-...`, `xoxs-...`)
+  - Twilio (`SK...`, `AC...`)
+  - SendGrid (`SG.xxx.yyy`)
   - HuggingFace (`hf_...`)
-  - Cloudflare
-  - Supabase (`sbp_...`)
-  - Azure
+  - Cloudflare (UUID tokens)
+  - Supabase (`sbp_...`, `sb_secret_...`)
+  - Azure (`Endpoint=sb://...`)
 - **Confidence-based severity scoring** (CRITICAL/HIGH/MEDIUM/LOW) with tunable threshold
 - Async + bounded concurrency for faster scans.
 - Checkpoint/resume support (`progress.json`).
