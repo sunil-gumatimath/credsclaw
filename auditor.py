@@ -23,7 +23,7 @@ load_dotenv()
 
 try:
     from tqdm import tqdm
-except Exception:
+except ImportError:
     tqdm = None
 
 # Provider patterns
