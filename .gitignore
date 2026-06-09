@@ -29,3 +29,4 @@ audit_results.csv
 audit_results.txt
 audit.log
 docker-output/
+nul

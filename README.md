@@ -4,7 +4,7 @@ Async Python CLI to scan GitHub repositories (code search, commit messages) or l
 
 ## Features
 
-- **Scan targets**: GitHub `code` search, GitHub `commits` search, or local directory (`--mode code | commits | local`)
+- **Scan targets**: GitHub `code` search, GitHub `commits` search, local directory (`--mode code | commits | local`), or **local git history** (`--mode git-history`)
 - **Provider support**:
 
 | Provider | Key Patterns |
@@ -84,7 +84,7 @@ python -m pip install -r requirements.txt
 ## Quick Start
 
 ```bash
-# Basic run (defaults: mode=code, providers=openai,anthropic)
+# Default scan (GitHub code search for OpenAI + Anthropic keys)
 python auditor.py
 
 # Dry run — search only, no findings export
@@ -170,6 +170,74 @@ python auditor.py --mode local --dir /path/to/codebase --providers openai,github
 | `--store-raw-keys` | Include raw keys in checkpoint/export (unsafe). |
 | `--encrypt-output` | Encrypt exported file with Fernet. |
 | `--encryption-key` | Fernet key string (or use `OUTPUT_ENCRYPTION_KEY` env var). |
+
+## New in This Version
+
+### Config File (`--config`)
+
+Persist your scan preferences in a YAML file (`auditor.yaml` by default):
+
+```yaml
+# auditor.yaml
+mode: local
+dir: ./my-project
+providers:
+  - openai
+  - github
+  - aws
+confidence_threshold: 60
+output_format: html
+output_file: report.html
+validate: true
+```
+
+CLI flags always override config values, so you can have a base config and tweak per run:
+```bash
+python auditor.py --config my-config.yaml --providers openai
+```
+
+### Parallel Provider Scanning
+
+When scanning multiple providers, they now run **concurrently** instead of sequentially. This means a scan with `--providers openai,github,aws` will finish in roughly the time of the slowest single provider, not their sum.
+
+### Git History Scanning (`--mode git-history`)
+
+Scan the full commit history of a local git repository for secrets that may have been committed and never removed:
+
+```bash
+python auditor.py --mode git-history --dir ./my-repo --providers github,slack,sendgrid
+```
+
+Each commit diff is inspected for matching key patterns, so even keys that were deleted in later commits are still caught.
+
+### Pre-commit Hook (`--generate-pre-commit-hook`)
+
+Generate a `.pre-commit-config.yaml` to automatically scan staged files for secrets before every commit:
+
+```bash
+python auditor.py --generate-pre-commit-hook
+```
+
+Then install the hook:
+```bash
+pip install pre-commit && pre-commit install
+```
+
+### HTML Report (`--output-format html`)
+
+Generate a rich, self-contained HTML report with filtering, sorting, and severity charts:
+
+```bash
+python auditor.py --output-format html --output-file report.html
+```
+
+The report features:
+- Dark theme matching GitHub's UI
+- Severity breakdown with visual bars
+- Sortable columns (click any header)
+- Live search/filter
+- Expandable detail rows with commit info, URLs, and hashes
+- No external dependencies (everything is inlined)
 
 ## Validation Support
 

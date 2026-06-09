@@ -1,0 +1,10 @@
+repos:
+  - repo: local
+    hooks:
+      - id: api-key-auditor
+        name: Exposed API Key Auditor
+        description: Scans staged files for exposed API keys and secrets
+        entry: python auditor.py --mode local --dir . --confidence-threshold 60.0 --dry-run
+        language: system
+        types: [text]
+        pass_filenames: false
