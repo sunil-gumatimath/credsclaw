@@ -17,7 +17,7 @@ def test_generate_pre_commit_config(tmp_path):
     result_path = generate_pre_commit_config(out_path)
     assert os.path.exists(out_path)
     content = Path(out_path).read_text(encoding="utf-8")
-    assert "api-key-auditor" in content
+    assert "credsclaw" in content
     assert "python -m auditor" in content
     assert result_path == os.path.abspath(out_path)
 

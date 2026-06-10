@@ -1,4 +1,4 @@
-# 🔍 Exposed API Key Auditor
+# 🔍 CredsClaw
 
 > **Async Python CLI** that scans GitHub repositories, local directories, and git history for leaked API keys and secrets across **13 providers**. Features intelligent confidence scoring, deduplication, checkpoint/resume, and rich HTML reports.
 
@@ -51,7 +51,7 @@
 
 ```bash
 # 1. Install
-git clone <repo-url> && cd api-key-auditor
+git clone <repo-url> && cd credsclaw
 pip install -e .
 
 # 2. Set your GitHub token
@@ -298,20 +298,20 @@ python -m auditor --mode local --dir . --store-raw-keys --encrypt-output
 ### Build
 
 ```bash
-docker build -t api-key-auditor .
+docker build -t credsclaw .
 ```
 
 ### Run
 
 ```bash
 # Local directory scan (mount target directory)
-docker run --rm -v "$(pwd):/work" api-key-auditor --mode local --dir /work --providers all
+docker run --rm -v "$(pwd):/work" credsclaw --mode local --dir /work --providers all
 
 # GitHub scan (pass token via env)
-docker run --rm -e GITHUB_TOKEN=ghp_... api-key-auditor --repo owner/repo --providers openai
+docker run --rm -e GITHUB_TOKEN=ghp_... credsclaw --repo owner/repo --providers openai
 
 # With HTML output
-docker run --rm -v "$(pwd):/work" api-key-auditor --mode local --dir /work --providers all --output-format html --output-file /work/output/report.html
+docker run --rm -v "$(pwd):/work" credsclaw --mode local --dir /work --providers all --output-format html --output-file /work/output/report.html
 ```
 
 ### Docker Compose
@@ -338,8 +338,8 @@ This creates a local pre-commit hook that runs a dry-run scan on all staged text
 repos:
   - repo: local
     hooks:
-      - id: api-key-auditor
-        name: Exposed API Key Auditor
+      - id: credsclaw
+        name: CredsClaw
         description: Scans staged files for exposed API keys and secrets
         entry: python -m auditor --mode local --dir . --confidence-threshold 60.0 --dry-run
         language: system
@@ -415,7 +415,7 @@ CLI args + YAML config
 
 ```bash
 git clone <repo-url>
-cd api-key-auditor
+cd credsclaw
 pip install -e .
 pip install pytest
 ```

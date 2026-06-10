@@ -17,8 +17,8 @@ PRE_COMMIT_HOOK_TEMPLATE = """\
 repos:
   - repo: local
     hooks:
-      - id: api-key-auditor
-        name: Exposed API Key Auditor
+      - id: credsclaw
+        name: CredsClaw
         description: Scans staged files for exposed API keys and secrets
         entry: python -m auditor --mode local --dir . --confidence-threshold 60.0 --dry-run
         language: system
@@ -62,7 +62,7 @@ DEFAULT_CONFIG_FILE_SHORT = DEFAULT_CONFIG_FILE  # re-export for convenience
 def build_arg_parser() -> argparse.ArgumentParser:
     """Build the argument parser (exposed separately so config can inject defaults)."""
     parser = argparse.ArgumentParser(
-        description="Exposed API Key Auditor - Scan GitHub or local directories for leaked secrets",
+        description="CredsClaw - Scan GitHub or local directories for leaked secrets",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 Examples:

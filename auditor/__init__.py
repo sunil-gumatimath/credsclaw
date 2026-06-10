@@ -1,4 +1,4 @@
-"""Exposed API Key Auditor — scan for leaked secrets across GitHub, git, and local files."""
+"""CredsClaw — scan for leaked secrets across GitHub, git, and local files."""
 
 import logging
 import os

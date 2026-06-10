@@ -115,7 +115,7 @@ def export_html_results(
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>API Key Auditor Report</title>
+<title>CredsClaw Report</title>
 <style>
   *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
   body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0d1117; color: #c9d1d9; padding: 24px; }}
@@ -152,7 +152,7 @@ def export_html_results(
 </style>
 </head>
 <body>
-<h1>\\U0001f6e1\\ufe0f API Key Auditor Report</h1>
+<h1>\U0001f6e1\ufe0f CredsClaw Report</h1>
 <p class="subtitle">{total} finding(s) \\u2022 Avg confidence {avg_conf}/100 \\u2022 Generated {safe_utc_now()[:10]}</p>
 
 <div class="stats">

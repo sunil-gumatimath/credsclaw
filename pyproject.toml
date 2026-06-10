@@ -3,9 +3,9 @@ requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "api-key-auditor"
+name = "credsclaw"
 version = "0.1.0"
-description = "Async CLI to scan GitHub repositories, local directories, or git history for exposed API keys and secrets"
+description = "CredsClaw — async CLI to scan GitHub repositories, local directories, or git history for exposed API keys and secrets"
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}

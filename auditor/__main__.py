@@ -62,7 +62,7 @@ async def main() -> None:
     args.deny_patterns = parse_csv_arg(args.deny_patterns)
 
     logger.info("=" * 60)
-    logger.info("Exposed API Key Auditor")
+    logger.info("CredsClaw")
     logger.info("=" * 60)
     logger.info("Mode: %s", args.mode)
     logger.info("Repository: %s", args.repo or "All (global search)")

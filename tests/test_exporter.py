@@ -52,7 +52,7 @@ def test_export_html_results_creates_file(tmp_path):
     assert os.path.exists(out_file)
     content = Path(out_file).read_text(encoding="utf-8")
     assert "<!DOCTYPE html>" in content
-    assert "API Key Auditor Report" in content
+    assert "CredsClaw Report" in content
 
 
 def test_export_html_results_contains_key_data(tmp_path):
