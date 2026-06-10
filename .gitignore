@@ -22,6 +22,11 @@ coverage.xml
 .pytest_cache
 .hypothesis
 
+# Build / dist
+*.egg-info/
+dist/
+build/
+
 # Project-specific
 progress.json
 audit_results.json
@@ -29,4 +34,5 @@ audit_results.csv
 audit_results.txt
 audit.log
 docker-output/
+output/
 nul

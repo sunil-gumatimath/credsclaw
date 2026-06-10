@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "api-key-auditor"
+version = "0.1.0"
+description = "Async CLI to scan GitHub repositories, local directories, or git history for exposed API keys and secrets"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+keywords = ["security", "audit", "api-keys", "secrets", "github"]
+
+authors = [
+    {name = "Tedz"},
+]
+
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+    "Topic :: Software Development :: Testing",
+]
+
+dependencies = [
+    "aiohttp>=3.9.0",
+    "tqdm>=4.66.0",
+    "python-dotenv>=1.0.0",
+    "cryptography>=42.0.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[project.scripts]
+auditor = "auditor.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["auditor*"]
