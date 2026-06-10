@@ -1,0 +1,45 @@
+"""Confidence scoring, severity levels, masking, and fingerprinting tests."""
+
+from auditor import (
+    calculate_confidence_score,
+    get_severity_level,
+    mask_key,
+    fingerprint_key,
+)
+
+
+def test_mask_and_fingerprint():
+    key = "sk-proj-abcdefghijklmnopqrstuvwxyz1234567890123456789012345678903456"
+    masked = mask_key(key)
+    assert masked.startswith("sk-proj-")
+    assert masked.endswith("3456")
+    fp = fingerprint_key(key)
+    assert len(fp) == 64
+
+
+def test_confidence_scoring_high_entropy():
+    key = "sk-" + "".join(chr(65 + (i * 13) % 52) for i in range(48))
+    context = "api_key=secret production token authorization"
+    score = calculate_confidence_score(key, context, is_noise=False)
+    assert score > 60.0, f"Expected score > 60, got {score}"
+
+
+def test_confidence_scoring_low_entropy():
+    key = "aaaaaaaa"
+    context = "test key"
+    score = calculate_confidence_score(key, context, is_noise=False)
+    assert score < 40.0
+
+
+def test_confidence_scoring_noise_penalty():
+    key = "sk-" + "a" * 48
+    context = "example placeholder dummy test"
+    score = calculate_confidence_score(key, context, is_noise=True)
+    assert score < 50.0
+
+
+def test_severity_levels():
+    assert get_severity_level(90.0) == "CRITICAL"
+    assert get_severity_level(70.0) == "HIGH"
+    assert get_severity_level(50.0) == "MEDIUM"
+    assert get_severity_level(30.0) == "LOW"
