@@ -1,329 +1,474 @@
-# Exposed API Key Auditor
+# 🔍 Exposed API Key Auditor
 
-Async Python CLI to scan GitHub repositories (code search, commit messages), local directories, or local git history for exposed API keys and secrets. Features resumable checkpoints, optional live validation, confidence-based severity scoring, config-file support, and encrypted output in JSON, CSV, TXT, or HTML.
+> **Async Python CLI** that scans GitHub repositories, local directories, and git history for leaked API keys and secrets across **13 providers**. Features intelligent confidence scoring, deduplication, checkpoint/resume, and rich HTML reports.
+
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](# )
+[![Tests](https://img.shields.io/badge/tests-48%20passing-brightgreen)](# )
+[![License: MIT](https://img.shields.io/badge/license-MIT-yellow)](# )
+
+---
+
+## Table of Contents
+
+- [Features](#features)
+- [Quick Start](#quick-start)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Scan Modes](#scan-modes)
+- [Supported Providers](#supported-providers)
+- [Confidence Scoring](#confidence-scoring)
+- [Configuration](#configuration)
+- [Output Formats](#output-formats)
+- [Docker](#docker)
+- [Pre-commit Hook](#pre-commit-hook)
+- [Architecture](#architecture)
+- [Development](#development)
+- [FAQ](#faq)
+
+---
 
 ## Features
 
-- **Multiple scan modes**
-  - `code` — GitHub code search for keys in file contents
-  - `commits` — GitHub commit-message search
-  - `local` — Recursive local directory scan
-  - `git-history` — Full git history scan across all branches (detects keys deleted in later commits)
-- **13 provider key patterns** — OpenAI, Anthropic, Google AI, AWS, Stripe, GitHub, Slack, Twilio, SendGrid, HuggingFace, Cloudflare, Supabase, Azure
-- **Confidence-based severity scoring** — Each finding scored 0–100 with severity CRITICAL / HIGH / MEDIUM / LOW
-- **Tunable confidence threshold** — `--confidence-threshold` (default: 50.0)
-- **Async + bounded concurrency** — Parallel providers and concurrent file processing
-- **Checkpoint/resume** — Incremental scans with `--resume --since-checkpoint`
-- **Optional live validation** — Test discovered keys against provider APIs where supported
-- **Context/noise filtering** — Built-in noise detection (placeholder keys, examples, dummies) plus custom allow/deny regex filters
-- **YAML config file** — Persist scan preferences; CLI flags override config values
-- **Multiple export formats** — JSON, CSV, TXT, or interactive HTML report
-- **Optional Fernet encryption** — `--encrypt-output` for encrypted export files
-- **Pre-commit hook** — Generate `.pre-commit-config.yaml` with `--generate-pre-commit-hook`
-- **Key safety** — Keys stored as SHA-256 hash + masked preview by default; use `--store-raw-keys` only when explicitly needed
-
-## Supported Providers
-
-| Provider | Key Patterns |
+| Feature | Description |
 |---|---|
-| **OpenAI** | Classic `sk-{48 alnum}`, project `sk-proj-...T3BlbkFJ...`, service account `sk-svcacct-...`, admin `sk-admin-...` |
-| **Anthropic** | `sk-ant-api01-...`, `sk-ant-api02-...`, `sk-ant-api03-...`, `sk-ant-oat01-...`, `sk-ant-admin-...` |
-| **Google AI** | `AIza{35 chars}`, `AQ.{35+ chars}` |
-| **AWS** | Access Key IDs: `AKIA`, `ASIA`, `ABIA`, `ACCA` (+16 chars) |
-| **Stripe** | Secret `sk_live_` / `sk_test_`, restricted `rk_live_` / `rk_test_`, publishable `pk_live_` / `pk_test_`, webhook `whsec_` |
-| **GitHub** | `ghp_`, `gho_`, `ghs_`, `ghr_`, `ghu_`, `github_pat_` |
-| **Slack** | Bot/user tokens `xoxb-`, `xoxp-`, `xoxa-`, `xoxr-`, `xoxs-`, `xoxo-`, `xoxe-`, app tokens `xapp-`, `xwfp-`, webhook URLs `hooks.slack.com/services/...` |
-| **Twilio** | Account SID `AC...`, API Key `SK...` |
-| **SendGrid** | `SG.{22 chars}.{43 chars}` |
-| **HuggingFace** | `hf_{34 alnum}` |
-| **Cloudflare** | `cfk_`, `cfut_`, `cfat_` prefixed tokens |
-| **Supabase** | `sbp_`, `sb_secret_`, `sb_publishable_` prefixed tokens |
-| **Azure** | Service Bus connection strings (`Endpoint=sb://...`) |
+| **4 scan modes** | GitHub code search, commit messages, local directory, git history |
+| **13 provider patterns** | OpenAI, Anthropic, Google, AWS, Stripe, GitHub, Slack, Twilio, SendGrid, HuggingFace, Cloudflare, Supabase, Azure |
+| **Confidence scoring** | Multi-factor analysis: Shannon entropy, context keywords, length, character diversity, noise penalties |
+| **Severity tiers** | CRITICAL (80+), HIGH (60-79), MEDIUM (40-59), LOW (<40) |
+| **Live validation** | Ping provider APIs to confirm whether discovered keys are still active |
+| **Deduplication** | SHA-256 fingerprinting prevents the same key from being reported twice |
+| **Checkpoint / Resume** | Save progress mid-scan and resume later without re-scanning |
+| **HTML reports** | Interactive, sortable, filterable HTML reports with severity bars |
+| **Encrypted output** | Fernet-symmetric encryption for sensitive results |
+| **Pre-commit integration** | Built in `.pre-commit-config.yaml` generation |
+| **YAML config** | Persistent configuration with CLI override precedence |
+| **Dry-run mode** | Estimate scope without fetching file contents |
+| **Allow / deny patterns** | Regex-based filtering to include or exclude matches |
 
-## Confidence Scoring
-
-Each detected key receives a **confidence score (0–100)** based on:
-
-| Factor | Max Points | Description |
-|---|---|---|
-| Entropy | 30 | Shannon entropy of the key value (randomness) |
-| Context patterns | 25 | Keywords like `api_key`, `secret`, `token` in surrounding text |
-| Noise filter | 20 | Full penalty if context contains placeholder/example language |
-| Length | 15 | Longer keys score higher (4 thresholds) |
-| Character diversity | 10 | Ratio of unique to total characters |
-
-**Severity levels:**
-
-| Severity | Score Range |
-|---|---|
-| CRITICAL | >= 80 |
-| HIGH | 60–79 |
-| MEDIUM | 40–59 |
-| LOW | < 40 |
-
-## Requirements
-
-- Python 3.11+
-- GitHub Personal Access Token in `GITHUB_TOKEN` env var (not required for `--mode local` or `git-history`)
-
-```bash
-python -m pip install -r requirements.txt
-```
-
-## Setup
-
-1. Copy `.env.example` to `.env`.
-2. Set `GITHUB_TOKEN=your_token` ([generate one](https://github.com/settings/tokens) with `public_repo` scope).
-3. Optional environment variables:
-   - `OUTPUT_ENCRYPTION_KEY` — for `--encrypt-output`
-   - `GITHUB_AUDITOR_DISABLE_FILE_LOG=1` — disable `audit.log`
+---
 
 ## Quick Start
 
 ```bash
-# Default scan (GitHub code search for OpenAI + Anthropic keys)
-python auditor.py
+# 1. Install
+git clone <repo-url> && cd api-key-auditor
+pip install -e .
 
-# Dry run — search only, no content fetch or export
-python auditor.py --dry-run --providers openai,anthropic,google
+# 2. Set your GitHub token
+echo "GITHUB_TOKEN=ghp_..." > .env
 
-# Target a single repository
-python auditor.py --repo owner/repo --providers openai,github
+# 3. Run a scan
+python -m auditor --repo owner/repo --providers openai,github,aws
 
-# Validate discovered keys where supported
-python auditor.py --validate
-
-# High-throughput scan
-python auditor.py --max-concurrency 20 --checkpoint-interval 50
-
-# Only report high-confidence findings
-python auditor.py --confidence-threshold 70 --providers openai,aws,stripe
-
-# Scan all available providers
-python auditor.py --providers openai,anthropic,google,aws,stripe,github,slack,twilio,sendgrid,huggingface,cloudflare,supabase,azure
-
-# Local directory scan
-python auditor.py --mode local --dir /path/to/codebase --providers openai,github
-
-# Git history scan
-python auditor.py --mode git-history --dir ./my-repo --providers github,slack
-
-# Generate interactive HTML report
-python auditor.py --output-format html --output-file report.html
-
-# Use YAML config file
-python auditor.py --config my-config.yaml
+# 4. Try local directory scan
+python -m auditor --mode local --dir . --providers all
 ```
 
-## Common Commands
+---
+
+## Installation
+
+### Standard
 
 ```bash
-# Code mode with filters
-python auditor.py --mode code --extensions py,js,env --language python --min-stars 50
-
-# Commit-message scan
-python auditor.py --mode commits --repo owner/repo
-
-# Incremental scan — only items newer than last checkpoint
-python auditor.py --resume --since-checkpoint
-
-# Encrypted JSON export
-python auditor.py --encrypt-output --output-file results.enc
-
-# Allow/deny filtering
-python auditor.py --allow-patterns OPENAI_API_KEY,ANTHROPIC_API_KEY --deny-patterns example,dummy,mock
-
-# Generate pre-commit hook
-python auditor.py --generate-pre-commit-hook
+pip install -r requirements.txt
+pip install -e .
 ```
 
-## CLI Reference
+### Dependencies
 
-### Core
+- `aiohttp` — async HTTP for GitHub API and live key validation
+- `tqdm` — progress bars during scanning
+- `python-dotenv` — `.env` file loading
+- `pyyaml` — YAML config parsing
+- `cryptography` — optional, for encrypted output
 
-| Flag | Description | Default |
+---
+
+## Usage
+
+```bash
+python -m auditor [options]
+```
+
+### Basic Examples
+
+```bash
+# Scan a specific GitHub repository for OpenAI and AWS keys
+python -m auditor --repo owner/repo --providers openai,aws
+
+# Scan the current directory for all 13 provider patterns
+python -m auditor --mode local --dir . --providers openai,anthropic,google,aws,stripe,github,slack,twilio,sendgrid,huggingface,cloudflare,supabase,azure
+
+# Check your own git history for accidentally committed secrets
+python -m auditor --mode git-history --dir . --providers github --confidence-threshold 60
+
+# Generate an interactive HTML report
+python -m auditor --mode local --dir ./project --providers all --output-format html
+
+# Scan everything and validate live keys against provider APIs
+python -m auditor --repo owner/repo --providers all --validate
+```
+
+### Common Options
+
+| Flag | Default | Description |
 |---|---|---|
-| `--config` | YAML config file path | `auditor.yaml` |
-| `--repo` | Target repository (`owner/repo`). Omit for global search. | `""` (global) |
-| `--dir` | Local directory path (required for `--mode local` / `git-history`) | — |
-| `--mode` | Search mode: `code`, `commits`, `local`, or `git-history` | `code` |
-| `--providers` | Comma-separated providers | `openai,anthropic` |
-| `--extensions` | File extensions to search (`py,js,env` — code mode only) | `""` |
-| `--validate` | Validate found keys against provider APIs | `false` |
-| `--output-format` | Export format: `json`, `csv`, `txt`, or `html` | `json` |
-| `--output-file` | Export file path (derived from format if not set) | `audit_results.{format}` |
-| `--resume` | Continue from previous checkpoint | `false` |
-| `--checkpoint-file` | Checkpoint file path | `progress.json` |
-| `--max-pages` | Max GitHub API pages to fetch | unlimited |
-| `--min-stars` | Minimum repo stars filter | none |
-| `--language` | Programming language filter | none |
-| `--updated-after` | Repos updated after date (`YYYY-MM-DD`) | none |
-| `--sort` | Sort mode: `indexed` or best-match | `indexed` |
-| `--timeout` | Validation request timeout (seconds) | `10` |
+| `--mode` | `code` | Scan mode: `code`, `commits`, `local`, `git-history` |
+| `--providers` | `openai,anthropic` | Comma-separated provider list (or `all` for every provider) |
+| `--repo` | (empty) | Specific repository: `owner/repo` |
+| `--dir` | (empty) | Directory for local/git-history mode |
+| `--output-format` | `json` | Output format: `json`, `csv`, `txt`, `html` |
+| `--output-file` | `output/audit_results.{ext}` | Custom output path |
+| `--confidence-threshold` | `50.0` | Minimum score (0-100) to report a finding |
+| `--validate` | off | Ping provider APIs to confirm keys are live |
+| `--dry-run` | off | Count matches without fetching contents |
+| `--max-concurrency` | `10` | Parallel file processors |
+| `--store-raw-keys` | off | Store raw keys in output (unsafe, use encryption) |
+| `--encrypt-output` | off | Encrypt results with Fernet |
+| `--config` | `auditor.yaml` | YAML configuration file path |
+| `--resume` | off | Continue from previous checkpoint |
+| `--generate-pre-commit-hook` | off | Write `.pre-commit-config.yaml` and exit |
+| `--help` | | Show full argument reference |
 
-### Performance / UX
-
-| Flag | Description | Default |
-|---|---|---|
-| `--max-concurrency` | Concurrent item processors | `10` |
-| `--checkpoint-interval` | Save progress every N items | `25` |
-| `--dry-run` | Search only; skip content fetch and export | `false` |
-| `--since-checkpoint` | Only process items newer than checkpoint timestamp | `false` |
-| `--confidence-threshold` | Minimum confidence score (0–100) to report | `50.0` |
-
-### Security / Filtering
+### GitHub Filters
 
 | Flag | Description |
 |---|---|
-| `--allow-patterns` | Comma-separated regex patterns; matching context is always accepted |
-| `--deny-patterns` | Comma-separated regex patterns; matching context is rejected |
-| `--store-raw-keys` | Include raw keys in checkpoint/export (unsafe) |
-| `--encrypt-output` | Encrypt exported file with Fernet |
-| `--encryption-key` | Fernet key string (or use `OUTPUT_ENCRYPTION_KEY` env var) |
+| `--max-pages` | Maximum GitHub API pages |
+| `--min-stars` | Minimum repository stars |
+| `--language` | Programming language filter |
+| `--updated-after` | Only repos updated after date (YYYY-MM-DD) |
+| `--extensions` | File extension filter (e.g., `py,js,env`) |
+| `--allow-patterns` | Comma-separated regex allow patterns |
+| `--deny-patterns` | Comma-separated regex deny patterns |
 
-### Utility
+---
 
-| Flag | Description |
+## Scan Modes
+
+### `code` (default) — GitHub Code Search
+
+Searches GitHub's code index for exposed keys. Requires a `GITHUB_TOKEN` (set in `.env` or pass on prompt).
+
+```bash
+python -m auditor --repo django/django --providers openai,stripe
+```
+
+### `commits` — GitHub Commit Message Search
+
+Scans commit messages for keys accidentally described or included in commit text.
+
+```bash
+python -m auditor --mode commits --providers github
+```
+
+### `local` — Local Directory Scan
+
+Recursively scans all files in a local directory. Automatically skips binary files, hidden directories (`.git`, `.venv`), and respects `--extensions` filters. **Does not require a GitHub token.**
+
+```bash
+python -m auditor --mode local --dir . --providers aws,github --output-format html
+```
+
+### `git-history` — Local Git History Scan
+
+Runs `git log --all` and inspects every commit's diff content for exposed keys. Useful for finding keys that were committed and later removed.
+
+```bash
+python -m auditor --mode git-history --dir ./my-repo --providers slack,twilio
+```
+
+---
+
+## Supported Providers
+
+| Provider | Pattern Prefix | Live Validation |
+|---|---|---|
+| **OpenAI** | `sk-` | ✓ |
+| **Anthropic** | `sk-ant-` | ✓ |
+| **Google AI** | `AIza`, `AQ.` | — |
+| **AWS** | `AKIA`, `ASIA`, `ABIA`, `ACCA` | — |
+| **Stripe** | `sk_`, `pk_`, `rk_`, `whsec_` | ✓ |
+| **GitHub** | `ghp_`, `gho_`, `ghs_`, `ghr_`, `ghu_`, `github_pat_` | ✓ |
+| **Slack** | `xoxb-`, `xapp-`, `xwfp-`, `hooks.slack.com` | ✓ |
+| **Twilio** | `SK`, `AC` | — |
+| **SendGrid** | `SG.` | ✓ |
+| **HuggingFace** | `hf_` | ✓ |
+| **Cloudflare** | `cfk_`, `cfut_`, `cfat_` | ✓ |
+| **Supabase** | `sbp_`, `sb_publishable_`, `sb_secret_` | ✓ |
+| **Azure** | `Endpoint=sb://` | — |
+
+Live validatable providers ping their respective APIs to confirm whether the discovered key is still active.
+
+---
+
+## Confidence Scoring
+
+Each potential secret is scored from **0–100** using a multi-factor model. The score determines both whether the result is reported (based on `--confidence-threshold`) and its severity label.
+
+### Scoring Factors
+
+| Factor | Max Points | Description |
+|---|---|---|
+| **Shannon Entropy** | 30 | Higher randomness = more likely a real key |
+| **Context Keywords** | 25 | Surrounding text contains `api_key`, `secret`, `token`, etc. |
+| **Noise Penalty** | 20 | Full score if no noise words (`example`, `dummy`, `changeme`…); 0 if detected |
+| **Key Length** | 15 | Longer keys are more likely real: 32+ chars = 15pt |
+| **Character Diversity** | 10 | Unique character ratio to total length |
+
+### Severity Tiers
+
+| Score | Label |
 |---|---|
-| `--generate-pre-commit-hook` | Generate a `.pre-commit-config.yaml` file for pre-commit integration |
+| 80–100 | 🔴 **CRITICAL** |
+| 60–79 | 🟠 **HIGH** |
+| 40–59 | 🟡 **MEDIUM** |
+| 0–39 | 🟢 **LOW** |
 
-## Config File
+---
 
-Persist scan preferences in a YAML file (`auditor.yaml` by default):
+## Configuration
+
+### YAML Config File
+
+Create `auditor.yaml` in the project root:
 
 ```yaml
-# auditor.yaml
+providers: openai,github,aws
 mode: local
-dir: ./my-project
-providers:
-  - openai
-  - github
-  - aws
-confidence_threshold: 60
+dir: ./project
 output_format: html
-output_file: report.html
-validate: true
+output_file: output/report.html
+confidence_threshold: 60.0
+max_concurrency: 5
+validate: false
+encrypt_output: false
 ```
 
-CLI flags always override config values, so you can have a base config and tweak per run:
+CLI flags always take precedence over config file values.
+
+### Environment Variables
+
+| Variable | Required | Description |
+|---|---|---|
+| `GITHUB_TOKEN` | For GitHub modes | Personal access token with `repo` or `public_repo` scope |
+| `OUTPUT_ENCRYPTION_KEY` | For encrypted output | Fernet key (32 base64-encoded bytes) |
+
+Both can be loaded from a `.env` file in the project root.
+
+---
+
+## Output Formats
+
+### JSON (`output/audit_results.json`)
+
+Full structured data including masked keys, hashes, timestamps, and validation status.
+
+### CSV (`output/audit_results.csv`)
+
+Flat table suitable for spreadsheet analysis.
+
+### TXT (`output/audit_results.txt`)
+
+Human-readable text summary of each finding.
+
+### HTML (`output/audit_results.html`)
+
+Interactive report with:
+
+- **Severity bar charts** — visual breakdown by severity
+- **Sortable table** — click any column header to sort
+- **Live filter** — type to filter by provider, severity, repo, or path
+- **Expandable rows** — click to reveal commit hash, URL, timestamps, and raw key
+- **Dark theme** — GitHub-dark inspired color scheme
+
+### Encryption
+
+All formats support `--encrypt-output` using Fernet symmetric encryption:
 
 ```bash
-python auditor.py --config my-config.yaml --providers openai
+python -m auditor --mode local --dir . --store-raw-keys --encrypt-output
 ```
 
-### Config Reference
-
-Available YAML keys:
-
-| Key | Type | Maps to |
-|---|---|---|
-| `repo` | string | `--repo` |
-| `dir` | string | `--dir` |
-| `mode` | string | `--mode` |
-| `providers` | list or string | `--providers` |
-| `validate` | bool | `--validate` |
-| `output_format` | string | `--output-format` |
-| `output_file` | string | `--output-file` |
-| `extensions` | list or string | `--extensions` |
-| `max_concurrency` | int | `--max-concurrency` |
-| `confidence_threshold` | float | `--confidence-threshold` |
-| `checkpoint_interval` | int | `--checkpoint-interval` |
-| `max_pages` | int | `--max-pages` |
-| `min_stars` | int | `--min-stars` |
-| `language` | string | `--language` |
-| `updated_after` | string | `--updated-after` |
-| `allow_patterns` | list or string | `--allow-patterns` |
-| `deny_patterns` | list or string | `--deny-patterns` |
-| `store_raw_keys` | bool | `--store-raw-keys` |
-| `encrypt_output` | bool | `--encrypt-output` |
-| `timeout` | int | `--timeout` |
-
-## Validation Support
-
-When `--validate` is passed, discovered keys are tested against the respective provider API where a lightweight endpoint exists:
-
-| Provider | Validated | Method |
-|---|---|---|
-| OpenAI | Yes | `GET /v1/models` |
-| Anthropic | Yes | `GET /v1/models` |
-| Stripe | Yes | `GET /v1/account` |
-| GitHub | Yes | `GET /user` |
-| Slack | Yes | `POST /api/auth.test` |
-| SendGrid | Yes | `GET /v3/user/profile` |
-| HuggingFace | Yes | `GET /api/whoami-v2` |
-| Cloudflare | Yes | `GET /client/v4/user/tokens/verify` |
-| Supabase | Yes | `GET /v1/projects` |
-| Google AI | No | No reliable lightweight validation endpoint |
-| AWS | No | Requires both Access Key ID and Secret Access Key |
-| Twilio | No | Requires both Account SID/API Key and Auth Token/Secret |
-| Azure | No | Requires SDK-based connection string validation |
-
-## HTML Report
-
-Generate a rich, self-contained HTML report with filtering, sorting, and severity charts:
-
-```bash
-python auditor.py --output-format html --output-file report.html
-```
-
-The report features:
-- Dark theme matching GitHub's UI
-- Severity breakdown with visual bars
-- Sortable columns (click any header)
-- Live search/filter input
-- Expandable detail rows with commit info, URLs, and hashes
-- Validation badges (valid / invalid / unknown)
-- No external dependencies (everything inlined)
-
-## Output Files
-
-| File | Contents |
-|---|---|
-| `progress.json` | Processed identifiers, findings, deduplication hashes, checkpoint timestamp |
-| `audit.log` | Runtime logs (unless disabled via `GITHUB_AUDITOR_DISABLE_FILE_LOG=1`) |
-| `audit_results.{json,csv,txt,html}` | Export file (default: JSON) |
-| `*.enc` | Encrypted export (when `--encrypt-output` is used) |
-
-## Key Safety
-
-By default, raw keys are **never stored**. Stored fields are:
-
-- `key_hash` — SHA-256 of the key (for deduplication)
-- `key_masked` — partial view (`first8...last4`)
-
-This applies to both checkpoint (`progress.json`) and export output. Pass `--store-raw-keys` only when you explicitly need the plaintext value (unsafe).
+---
 
 ## Docker
 
+### Build
+
 ```bash
-# Build
 docker build -t api-key-auditor .
-
-# Run with .env and local output directory
-docker run --rm --env-file .env -v "${PWD}/docker-output:/work" api-key-auditor --dry-run --providers openai,anthropic,google
-
-# Docker Compose
-docker compose run --rm auditor --dry-run --providers openai,anthropic,google
 ```
 
-Output files (`progress.json`, `audit.log`, `audit_results.*`) are written to `docker-output/`.
-
-## Testing
+### Run
 
 ```bash
-python -m pytest -q
+# Local directory scan (mount target directory)
+docker run --rm -v "$(pwd):/work" api-key-auditor --mode local --dir /work --providers all
+
+# GitHub scan (pass token via env)
+docker run --rm -e GITHUB_TOKEN=ghp_... api-key-auditor --repo owner/repo --providers openai
+
+# With HTML output
+docker run --rm -v "$(pwd):/work" api-key-auditor --mode local --dir /work --providers all --output-format html --output-file /work/output/report.html
 ```
 
-CI runs on Python 3.11 and 3.12 (GitHub Actions — see `.github/workflows/ci.yml`).
+### Docker Compose
 
-## Troubleshooting
+```bash
+docker-compose up
+```
 
-| Problem | Solution |
-|---|---|
-| `ModuleNotFoundError: dotenv` / `No module named pytest` | `python -m pip install -r requirements.txt` |
-| GitHub rate limits | Use a valid PAT with appropriate scope; reduce `--max-concurrency`; limit pages with `--max-pages` |
-| Empty results | Broaden providers; remove strict filters (`--language`, `--min-stars`, `--updated-after`) |
+Output is written to `./docker-output/` by default.
 
-## Responsible Use
+---
 
-This tool is intended for authorized security auditing and responsible disclosure only. Do not misuse discovered credentials. Report exposures to repository owners or providers for revocation.
+## Pre-commit Hook
+
+Generate a `.pre-commit-config.yaml` in one command:
+
+```bash
+python -m auditor --generate-pre-commit-hook
+```
+
+This creates a local pre-commit hook that runs a dry-run scan on all staged text files:
+
+```yaml
+repos:
+  - repo: local
+    hooks:
+      - id: api-key-auditor
+        name: Exposed API Key Auditor
+        description: Scans staged files for exposed API keys and secrets
+        entry: python -m auditor --mode local --dir . --confidence-threshold 60.0 --dry-run
+        language: system
+        types: [text]
+        pass_filenames: false
+```
+
+---
+
+## Architecture
+
+```
+auditor/                        # Installable Python package
+├── __init__.py                 # Package init, logging setup, re-exports
+├── __main__.py                 # Entry point: argparse → dispatch → export
+├── patterns.py                 # 13 regex patterns, noise list, provider registry
+├── scoring.py                  # Shannon entropy, confidence scoring, severity, masking
+├── scanner.py                  # APIAuditor class — all 4 scan modes
+├── validator.py                # Live API validation for 9 providers
+├── exporter.py                 # JSON/CSV/TXT/HTML export + summary printer
+├── tracker.py                  # Checkpoint/resume state management
+├── cli.py                      # Argparse builder, config merge, pre-commit hook
+├── config.py                   # YAML config file loader
+├── rate_limiter.py             # GitHub API rate limiter with exponential backoff
+└── utils.py                    # ISO-8601 parsing, UTC timestamp helper
+
+tests/                          # Module-scoped test files
+├── test_patterns.py            # Pattern matching tests
+├── test_scoring.py             # Scoring, masking, fingerprinting tests
+├── test_config.py              # Config loading and merging tests
+├── test_cli.py                 # CLI parsing and pre-commit hook tests
+├── test_exporter.py            # HTML export and format tests
+└── test_scanner.py             # Noise/allow/deny filtering, git history tests
+```
+
+### Data Flow
+
+```
+CLI args + YAML config
+        │
+        ▼
+  parse_args()            ←── build_arg_parser()
+        │
+        ▼
+  load_dotenv()           ←── GITHUB_TOKEN, OUTPUT_ENCRYPTION_KEY
+        │
+        ▼
+  ProgressTracker         ←── checkpoint/resume (output/progress.json)
+        │
+        ▼
+  APIAuditor (async)
+    ├── audit_api_keys()      ←── GitHub code search
+    ├── audit_commit_messages() ←── GitHub commit search
+    ├── audit_local_directory() ←── recursive file scan
+    └── audit_git_history()   ←── `git log --all` + diffs
+        │
+        ├── extract_candidates()   ←── regex + is_probable_secret()
+        ├── batch_validate_keys()  ←── optional API validation
+        └── ProgressTracker.save_progress()
+        │
+        ▼
+  export_results() / export_html_results()
+        │
+        ▼
+  output/audit_results.{json,csv,txt,html}
+```
+
+---
+
+## Development
+
+### Setup
+
+```bash
+git clone <repo-url>
+cd api-key-auditor
+pip install -e .
+pip install pytest
+```
+
+### Running Tests
+
+```bash
+python -m pytest tests/ -v        # 48 tests
+python -m pytest tests/ -q        # compact output
+```
+
+### Codebase Stats
+
+| Language | Files | Code | Comment |
+|---|---|---|---|
+| Python | 18 | 1,728 | 193 |
+| TOML | 1 | 21 | 0 |
+| Markdown | 1 | 0 | 194 |
+| **Total** | **24** | **1,775** | **396** |
+
+### Project Layout Principles
+
+- **Single Responsibility** — each module has one concern (scoring, validation, export…)
+- **No Circular Imports** — dependency graph flows: `utils → patterns → scoring → scanner → exporter`
+- **Async First** — `asyncio.gather` + `Semaphore` for parallel provider scans
+- **Test Coverage** — all public methods tested, git history tests use real `git` commands
+
+---
+
+## FAQ
+
+**Q: Why didn't the scan find the key in my `.env` file?**
+
+Make sure you're using local mode (`--mode local --dir .`). Code search mode only looks at GitHub. If it still doesn't find it, check that the `.env` file isn't excluded by the hidden-directory filter — hidden files (like `.env`) are included, only hidden directories are skipped.
+
+**Q: Does the tool upload my keys anywhere?**
+
+**No.** All scanning is local. In GitHub code-search mode, the tool fetches file contents from GitHub's API, processes them locally, and never sends discovered keys anywhere. Live validation sends the key directly to the provider's API (e.g., `api.openai.com`) for a single validation request.
+
+**Q: How do I avoid false positives from test keys?**
+
+Increase `--confidence-threshold` (e.g., `--confidence-threshold 70`) or add deny patterns: `--deny-patterns test,mock,dummy`. Test keys with high entropy may still trigger — consider using placeholder values like `sk-test-...` which match the noise filter.
+
+**Q: Can I scan a private repository?**
+
+Yes. Your `GITHUB_TOKEN` needs `repo` scope for private repos. Ensure it has the appropriate permissions in GitHub Settings → Developer Settings → Personal Access Tokens.
+
+**Q: What is the rate limit for GitHub API?**
+
+GitHub allows 10–30 requests per minute for search, depending on your token's level. The tool handles rate limiting with exponential backoff (up to 5 retries, max 300s wait). For large scans, use `--max-pages` to limit scope.
+
+---
+
+## License
+
+MIT
