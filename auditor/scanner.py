@@ -1,0 +1,730 @@
+"""Core APIAuditor class — scans GitHub, local directories, and git history."""
+
+import asyncio
+import base64
+import logging
+import os
+import re
+import subprocess
+
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import aiohttp
+
+try:
+    from tqdm import tqdm
+except ImportError:
+    tqdm = None
+
+from auditor.patterns import NOISE_SUBSTRINGS
+from auditor.scoring import (
+    calculate_confidence_score,
+    get_severity_level,
+    fingerprint_key,
+    mask_key,
+)
+from auditor.utils import parse_iso8601, safe_utc_now
+from auditor.rate_limiter import RateLimiter
+from auditor.tracker import ProgressTracker
+from auditor.validator import VALIDATION_MAP
+from auditor.cli import parse_csv_arg
+
+logger = logging.getLogger(__name__)
+
+
+class APIAuditor:
+    """Scans GitHub code/commits, local directories, or git history for exposed API keys."""
+
+    def __init__(
+        self,
+        token: str,
+        rate_limiter: RateLimiter,
+        progress: ProgressTracker,
+        args: Any,
+    ):
+        self.token = token
+        self.rate_limiter = rate_limiter
+        self.progress = progress
+        self.args = args
+        self.session: Optional[aiohttp.ClientSession] = None
+        self.lock = asyncio.Lock()
+        self.semaphore = asyncio.Semaphore(max(1, args.max_concurrency))
+        self.compiled_allow = (
+            [re.compile(p, re.IGNORECASE) for p in args.allow_patterns]
+            if args.allow_patterns
+            else []
+        )
+        self.compiled_deny = (
+            [re.compile(p, re.IGNORECASE) for p in args.deny_patterns]
+            if args.deny_patterns
+            else []
+        )
+        self.stats_by_provider: Dict[str, Dict[str, int]] = {}
+        self.stats_by_repo: Dict[str, int] = {}
+        self.since_dt = None
+        if args.since_checkpoint and progress.checkpoint_timestamp:
+            self.since_dt = parse_iso8601(progress.checkpoint_timestamp)
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+    async def __aenter__(self):
+        self.session = aiohttp.ClientSession(
+            headers={"Authorization": f"token {self.token}"}
+        )
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self.session:
+            await self.session.close()
+
+    # ------------------------------------------------------------------
+    # Stats
+    # ------------------------------------------------------------------
+    def _incr_stat(self, provider: str, repo: str) -> None:
+        provider_stats = self.stats_by_provider.setdefault(
+            provider, {"found": 0, "validated_true": 0, "validated_false": 0}
+        )
+        provider_stats["found"] += 1
+        self.stats_by_repo[repo] = self.stats_by_repo.get(repo, 0) + 1
+
+    def _record_validation(self, provider: str, valid: Optional[bool]) -> None:
+        provider_stats = self.stats_by_provider.setdefault(
+            provider, {"found": 0, "validated_true": 0, "validated_false": 0}
+        )
+        if valid is True:
+            provider_stats["validated_true"] += 1
+        elif valid is False:
+            provider_stats["validated_false"] += 1
+
+    # ------------------------------------------------------------------
+    # GitHub API
+    # ------------------------------------------------------------------
+    async def request_with_retry(
+        self, url: str, headers: Optional[Dict[str, str]] = None
+    ) -> Optional[Dict[str, Any]]:
+        for attempt in range(self.rate_limiter.max_retries):
+            try:
+                request_headers = {"Authorization": f"token {self.token}"}
+                if headers:
+                    request_headers.update(headers)
+                async with self.session.get(url, headers=request_headers) as response:
+                    await self.rate_limiter.wait_if_needed(
+                        response.status, dict(response.headers)
+                    )
+
+                    if response.status in {403, 429}:
+                        logger.warning(
+                            "Rate limit/auth issue for %s (status %s)",
+                            url, response.status,
+                        )
+                        await self.rate_limiter.exponential_backoff(attempt)
+                        continue
+                    if response.status == 404:
+                        return None
+
+                    response.raise_for_status()
+                    return await response.json()
+            except aiohttp.ClientError as exc:
+                logger.error("Request error for %s: %s", url, exc)
+                if attempt < self.rate_limiter.max_retries - 1:
+                    await self.rate_limiter.exponential_backoff(attempt)
+                    continue
+                return None
+        return None
+
+    async def search_github_code(
+        self, query: str, page: int = 1
+    ) -> Optional[Dict[str, Any]]:
+        from urllib.parse import quote_plus
+
+        encoded_q = quote_plus(query)
+        sort_param = f"&sort={self.args.sort}&order=desc" if self.args.sort else ""
+        url = f"https://api.github.com/search/code?q={encoded_q}&per_page=100&page={page}{sort_param}"
+        return await self.request_with_retry(url)
+
+    async def search_github_commits(
+        self, query: str, page: int = 1
+    ) -> Optional[Dict[str, Any]]:
+        from urllib.parse import quote_plus
+
+        encoded_q = quote_plus(query)
+        sort_param = f"&sort={self.args.sort}&order=desc" if self.args.sort else ""
+        url = f"https://api.github.com/search/commits?q={encoded_q}&per_page=100&page={page}{sort_param}"
+        return await self.request_with_retry(
+            url, headers={"Accept": "application/vnd.github.cloak-preview+json"}
+        )
+
+    async def get_file_content(
+        self, repo_full_name: str, path: str
+    ) -> Optional[str]:
+        url = f"https://api.github.com/repos/{repo_full_name}/contents/{path}"
+        data = await self.request_with_retry(url)
+        if not data or "content" not in data:
+            return None
+        try:
+            return base64.b64decode(data["content"]).decode("utf-8", errors="ignore")
+        except Exception as exc:
+            logger.error(
+                "Failed to decode content from %s/%s: %s",
+                repo_full_name, path, exc,
+            )
+            return None
+
+    # ------------------------------------------------------------------
+    # Candidate extraction and filtering
+    # ------------------------------------------------------------------
+    def _matches_allow(self, text: str) -> bool:
+        if not self.compiled_allow:
+            return True
+        return any(p.search(text) for p in self.compiled_allow)
+
+    def _matches_deny(self, text: str) -> bool:
+        if not self.compiled_deny:
+            return False
+        return any(p.search(text) for p in self.compiled_deny)
+
+    def is_probable_secret(self, key: str, context: str) -> Tuple[bool, float]:
+        """Return (is_likely_secret, confidence_score).
+
+        Filters through deny/allow patterns, noise detection, and entropy analysis.
+        The caller uses the pre-calculated score to avoid double computation.
+        """
+        combined = f"{key} {context}"
+        lowered = combined.lower()
+
+        if self._matches_deny(combined):
+            return False, 0.0
+        if self.compiled_allow and self._matches_allow(combined):
+            is_noise = any(noise in lowered for noise in NOISE_SUBSTRINGS)
+            confidence = calculate_confidence_score(key, context, is_noise)
+            return True, confidence
+
+        is_noise = any(noise in lowered for noise in NOISE_SUBSTRINGS)
+        confidence = calculate_confidence_score(key, context, is_noise)
+        return confidence >= self.args.confidence_threshold, confidence
+
+    def extract_candidates(
+        self, content: str, pattern: str
+    ) -> List[Tuple[str, str, float, str]]:
+        candidates: List[Tuple[str, str, float, str]] = []
+        for match in re.finditer(pattern, content):
+            key = match.group(0)
+            start = max(0, match.start() - 40)
+            end = min(len(content), match.end() + 40)
+            context = content[start:end]
+            is_probable, confidence = self.is_probable_secret(key, context)
+            if is_probable:
+                severity = get_severity_level(confidence)
+                candidates.append((key, context, confidence, severity))
+        return candidates
+
+    # ------------------------------------------------------------------
+    # Validation
+    # ------------------------------------------------------------------
+    async def batch_validate_keys(
+        self, keys_data: List[Tuple[Dict[str, Any], str]], provider: str
+    ) -> None:
+        validator = VALIDATION_MAP.get(provider)
+        if not validator:
+            return
+        tasks = [validator(raw_key, self.args.timeout) for _, raw_key in keys_data]
+        results = await asyncio.gather(*tasks)
+        for (key_data, _), valid in zip(keys_data, results):
+            key_data["valid"] = valid
+            self._record_validation(provider, valid)
+
+    # ------------------------------------------------------------------
+    # Repo / date filtering
+    # ------------------------------------------------------------------
+    def _is_recent_enough(
+        self, repo_updated_at: str = "", commit_date: str = ""
+    ) -> bool:
+        if not self.since_dt:
+            return True
+        check_dt = parse_iso8601(commit_date) or parse_iso8601(repo_updated_at)
+        if not check_dt:
+            return True
+        return check_dt > self.since_dt
+
+    def filter_repo(self, item: Dict[str, Any]) -> bool:
+        repo = item.get("repository", {})
+
+        if self.args.min_stars and repo.get("stargazers_count", 0) < self.args.min_stars:
+            return False
+        if self.args.language:
+            repo_lang = str(repo.get("language", "")).lower()
+            if repo_lang != self.args.language.lower():
+                return False
+        if self.args.updated_after:
+            updated_at = parse_iso8601(repo.get("updated_at", ""))
+            cutoff = parse_iso8601(self.args.updated_after)
+            if updated_at and cutoff and updated_at <= cutoff:
+                return False
+        return True
+
+    # ------------------------------------------------------------------
+    # Scan modes
+    # ------------------------------------------------------------------
+    async def audit_api_keys(
+        self, provider: str, query: str, pattern: str
+    ) -> None:
+        """GitHub code search mode."""
+        logger.info("Auditing %s API keys...", provider)
+        all_items: List[Dict[str, Any]] = []
+
+        page = 1
+        while True:
+            results = await self.search_github_code(query, page)
+            if not results or "items" not in results:
+                break
+            items = results["items"]
+            if not items:
+                break
+
+            filtered = [item for item in items if self.filter_repo(item)]
+            all_items.extend(filtered)
+            logger.info(
+                "Fetched page %s, got %s filtered code hits", page, len(filtered)
+            )
+
+            if len(items) < 100:
+                break
+            page += 1
+            if self.args.max_pages and page > self.args.max_pages:
+                logger.info("Reached max pages limit: %s", self.args.max_pages)
+                break
+
+        if self.args.dry_run:
+            logger.info("[Dry run] %s code hits for %s", len(all_items), provider)
+            return
+
+        keys_to_validate: List[Tuple[Dict[str, Any], str]] = []
+
+        async def process_item(item: Dict[str, Any]) -> None:
+            repo = item["repository"]["full_name"]
+            path = item["path"]
+            identifier = f"{repo}/{path}"
+
+            if not self._is_recent_enough(
+                repo_updated_at=item["repository"].get("updated_at", "")
+            ):
+                return
+
+            async with self.lock:
+                if self.progress.is_processed(identifier):
+                    return
+
+            async with self.semaphore:
+                content = await self.get_file_content(repo, path)
+            if not content:
+                async with self.lock:
+                    self.progress.mark_processed(identifier)
+                return
+
+            local_candidates = self.extract_candidates(content, pattern)
+
+            async with self.lock:
+                for key, _context, confidence, severity in local_candidates:
+                    key_hash = fingerprint_key(key)
+                    if self.progress.is_duplicate_hash(key_hash):
+                        continue
+                    key_data: Dict[str, Any] = {
+                        "provider": provider,
+                        "key_hash": key_hash,
+                        "key_masked": mask_key(key),
+                        "repo": repo,
+                        "path": path,
+                        "url": item.get("html_url")
+                        or f"https://github.com/{repo}/blob/{path}",
+                        "timestamp": safe_utc_now(),
+                        "confidence": round(confidence, 2),
+                        "severity": severity,
+                        "valid": None,
+                    }
+                    if self.args.store_raw_keys:
+                        key_data["key"] = key
+                    self.progress.add_key(key_data)
+                    self._incr_stat(provider, repo)
+                    keys_to_validate.append((key_data, key))
+                self.progress.mark_processed(identifier)
+                if len(self.progress.processed) % self.args.checkpoint_interval == 0:
+                    self.progress.save_progress()
+
+        tasks = [asyncio.create_task(process_item(item)) for item in all_items]
+        iterator = asyncio.as_completed(tasks)
+        if tqdm:
+            iterator = tqdm(iterator, total=len(tasks), desc=f"Auditing {provider}")
+        for coro in iterator:
+            await coro
+
+        if self.args.validate and keys_to_validate:
+            logger.info(
+                "Validating %s %s keys...", len(keys_to_validate), provider
+            )
+            await self.batch_validate_keys(keys_to_validate, provider)
+
+        self.progress.save_progress()
+        logger.info(
+            "Completed %s audit: %s total unique keys found",
+            provider, len(self.progress.found_keys),
+        )
+
+    async def audit_commit_messages(
+        self, provider: str, query: str, pattern: str
+    ) -> None:
+        """GitHub commit-message search mode."""
+        logger.info("Auditing %s API keys in commit messages...", provider)
+        all_items: List[Dict[str, Any]] = []
+
+        page = 1
+        while True:
+            results = await self.search_github_commits(query, page)
+            if not results or "items" not in results:
+                break
+            items = results["items"]
+            if not items:
+                break
+
+            filtered = [item for item in items if self.filter_repo(item)]
+            all_items.extend(filtered)
+            logger.info(
+                "Fetched page %s, got %s filtered commits", page, len(filtered)
+            )
+
+            if len(items) < 100:
+                break
+            page += 1
+            if self.args.max_pages and page > self.args.max_pages:
+                logger.info("Reached max pages limit: %s", self.args.max_pages)
+                break
+
+        if self.args.dry_run:
+            logger.info("[Dry run] %s commit hits for %s", len(all_items), provider)
+            return
+
+        keys_to_validate: List[Tuple[Dict[str, Any], str]] = []
+
+        async def process_commit(item: Dict[str, Any]) -> None:
+            repo = item["repository"]["full_name"]
+            commit_sha = item["sha"]
+            commit_msg = item.get("commit", {}).get("message", "")
+            commit_date = (
+                item.get("commit", {})
+                .get("author", {})
+                .get("date", "")
+                or item.get("commit", {})
+                .get("committer", {})
+                .get("date", "")
+            )
+            identifier = f"{repo}/commit/{commit_sha}"
+
+            if not self._is_recent_enough(
+                repo_updated_at=item["repository"].get("updated_at", ""),
+                commit_date=commit_date,
+            ):
+                return
+
+            async with self.lock:
+                if self.progress.is_processed(identifier):
+                    return
+
+            local_candidates = self.extract_candidates(commit_msg, pattern)
+
+            async with self.lock:
+                for key, _context, confidence, severity in local_candidates:
+                    key_hash = fingerprint_key(key)
+                    if self.progress.is_duplicate_hash(key_hash):
+                        continue
+                    key_data: Dict[str, Any] = {
+                        "provider": provider,
+                        "key_hash": key_hash,
+                        "key_masked": mask_key(key),
+                        "repo": repo,
+                        "commit": commit_sha,
+                        "url": item.get("html_url")
+                        or f"https://github.com/{repo}/commit/{commit_sha}",
+                        "message": commit_msg[:120],
+                        "timestamp": safe_utc_now(),
+                        "confidence": round(confidence, 2),
+                        "severity": severity,
+                        "valid": None,
+                    }
+                    if self.args.store_raw_keys:
+                        key_data["key"] = key
+                    self.progress.add_key(key_data)
+                    self._incr_stat(provider, repo)
+                    keys_to_validate.append((key_data, key))
+                self.progress.mark_processed(identifier)
+                if len(self.progress.processed) % self.args.checkpoint_interval == 0:
+                    self.progress.save_progress()
+
+        tasks = [asyncio.create_task(process_commit(item)) for item in all_items]
+        iterator = asyncio.as_completed(tasks)
+        if tqdm:
+            iterator = tqdm(
+                iterator, total=len(tasks), desc=f"Auditing {provider} commits"
+            )
+        for coro in iterator:
+            await coro
+
+        if self.args.validate and keys_to_validate:
+            logger.info(
+                "Validating %s %s keys...", len(keys_to_validate), provider
+            )
+            await self.batch_validate_keys(keys_to_validate, provider)
+
+        self.progress.save_progress()
+        logger.info(
+            "Completed %s commits audit: %s total unique keys found",
+            provider, len(self.progress.found_keys),
+        )
+
+    async def audit_local_directory(
+        self, provider: str, pattern: str, directory: str
+    ) -> None:
+        """Recursive local directory scan."""
+        logger.info(
+            "Auditing %s API keys in local directory: %s", provider, directory
+        )
+        dir_path = Path(directory)
+        if not dir_path.is_dir():
+            logger.error("Directory not found: %s", directory)
+            return
+
+        skip_extensions = {
+            ".pyc", ".pyo", ".pyd", ".so", ".dll", ".exe", ".bin",
+            ".jpg", ".jpeg", ".png", ".gif", ".ico", ".bmp", ".svg",
+            ".zip", ".tar", ".gz", ".bz2", ".7z", ".rar",
+            ".pdf", ".doc", ".docx", ".xls", ".xlsx",
+            ".mp3", ".mp4", ".avi", ".mov",
+            ".woff", ".woff2", ".ttf", ".eot",
+            ".class", ".o", ".obj",
+        }
+
+        allowed_extensions = None
+        if self.args.extensions:
+            allowed_extensions = {
+                f".{ext.lstrip('.')}" for ext in parse_csv_arg(self.args.extensions)
+            }
+
+        all_files: List[Path] = []
+        for file_path in dir_path.rglob("*"):
+            if not file_path.is_file():
+                continue
+            # Skip hidden directories (e.g., .git, .venv), but NOT hidden files like .env
+            parts = file_path.relative_to(dir_path).parts
+            if any(part.startswith(".") for part in parts[:-1]):
+                continue
+            if file_path.suffix.lower() in skip_extensions:
+                continue
+            if allowed_extensions and file_path.suffix.lower() not in allowed_extensions:
+                continue
+            all_files.append(file_path)
+
+        if self.args.dry_run:
+            logger.info(
+                "[Dry run] %s files found for %s in %s",
+                len(all_files), provider, directory,
+            )
+            return
+
+        keys_to_validate: List[Tuple[Dict[str, Any], str]] = []
+
+        async def process_file(file_path: Path) -> None:
+            identifier = f"{provider}/{file_path}"
+
+            async with self.lock:
+                if self.progress.is_processed(identifier):
+                    return
+
+            try:
+                content = file_path.read_text(encoding="utf-8", errors="ignore")
+            except Exception as exc:
+                logger.debug("Failed to read %s: %s", file_path, exc)
+                async with self.lock:
+                    self.progress.mark_processed(identifier)
+                return
+
+            local_candidates = self.extract_candidates(content, pattern)
+
+            async with self.lock:
+                for key, _context, confidence, severity in local_candidates:
+                    key_hash = fingerprint_key(key)
+                    if self.progress.is_duplicate_hash(key_hash):
+                        continue
+                    key_data: Dict[str, Any] = {
+                        "provider": provider,
+                        "key_hash": key_hash,
+                        "key_masked": mask_key(key),
+                        "repo": "local",
+                        "path": str(file_path.relative_to(dir_path)),
+                        "url": f"file://{file_path}",
+                        "timestamp": safe_utc_now(),
+                        "confidence": round(confidence, 2),
+                        "severity": severity,
+                        "valid": None,
+                    }
+                    if self.args.store_raw_keys:
+                        key_data["key"] = key
+                    self.progress.add_key(key_data)
+                    self._incr_stat(provider, "local")
+                    keys_to_validate.append((key_data, key))
+                self.progress.mark_processed(identifier)
+                if len(self.progress.processed) % self.args.checkpoint_interval == 0:
+                    self.progress.save_progress()
+
+        tasks = [asyncio.create_task(process_file(fp)) for fp in all_files]
+        iterator = asyncio.as_completed(tasks)
+        if tqdm:
+            iterator = tqdm(
+                iterator, total=len(tasks), desc=f"Scanning {provider} (local)"
+            )
+        for coro in iterator:
+            await coro
+
+        if self.args.validate and keys_to_validate:
+            logger.info(
+                "Validating %s %s keys...", len(keys_to_validate), provider
+            )
+            await self.batch_validate_keys(keys_to_validate, provider)
+
+        self.progress.save_progress()
+        logger.info(
+            "Completed %s local audit: %s total unique keys found",
+            provider, len(self.progress.found_keys),
+        )
+
+    async def audit_git_history(
+        self, provider: str, pattern: str, directory: str
+    ) -> None:
+        """Scan local git commit history across all branches."""
+        logger.info(
+            "Auditing %s API keys in git history: %s", provider, directory
+        )
+        dir_path = Path(directory).resolve()
+        git_dir = dir_path / ".git"
+        if not git_dir.is_dir():
+            logger.error("Not a git repository: %s", directory)
+            return
+
+        if self.args.dry_run:
+            logger.info(
+                "[Dry run] git history scan for %s in %s", provider, directory
+            )
+            return
+
+        # Gather all commits via ``git log``
+        try:
+            result = subprocess.run(
+                ["git", "log", "--all", "--format=%H||%an||%ae||%aI||%s", "--reverse"],
+                capture_output=True,
+                text=True,
+                cwd=str(dir_path),
+                timeout=120,
+            )
+            if result.returncode != 0:
+                logger.error("git log failed: %s", result.stderr.strip())
+                return
+            raw_log = result.stdout.strip()
+        except FileNotFoundError:
+            logger.error("git executable not found on PATH")
+            return
+        except subprocess.TimeoutExpired:
+            logger.error("git log timed out (large repository?)")
+            return
+
+        if not raw_log:
+            logger.info("No commits found in %s", directory)
+            return
+
+        commits: List[Dict[str, str]] = []
+        for line in raw_log.split("\n"):
+            parts = line.split("||", 4)
+            if len(parts) == 5:
+                commits.append({
+                    "sha": parts[0],
+                    "author": parts[1],
+                    "author_email": parts[2],
+                    "date": parts[3],
+                    "subject": parts[4],
+                })
+
+        keys_to_validate: List[Tuple[Dict[str, Any], str]] = []
+
+        async def process_commit(commit: Dict[str, str]) -> None:
+            sha = commit["sha"]
+            identifier = f"{provider}/git-history/{sha}"
+
+            async with self.lock:
+                if self.progress.is_processed(identifier):
+                    return
+
+            async with self.semaphore:
+                try:
+                    diff_result = subprocess.run(
+                        ["git", "show", sha, "--format="],
+                        capture_output=True,
+                        text=True,
+                        cwd=str(dir_path),
+                        timeout=30,
+                    )
+                    diff_text = diff_result.stdout
+                except (subprocess.TimeoutExpired, FileNotFoundError):
+                    async with self.lock:
+                        self.progress.mark_processed(identifier)
+                    return
+
+            local_candidates = self.extract_candidates(diff_text, pattern)
+
+            async with self.lock:
+                for key, _context, confidence, severity in local_candidates:
+                    key_hash = fingerprint_key(key)
+                    if self.progress.is_duplicate_hash(key_hash):
+                        continue
+                    key_data: Dict[str, Any] = {
+                        "provider": provider,
+                        "key_hash": key_hash,
+                        "key_masked": mask_key(key),
+                        "repo": "local (git history)",
+                        "path": f"commit/{sha}",
+                        "url": f"file://{dir_path}",
+                        "commit": sha,
+                        "author": commit["author"],
+                        "date": commit["date"][:10],
+                        "message": commit["subject"][:120],
+                        "timestamp": safe_utc_now(),
+                        "confidence": round(confidence, 2),
+                        "severity": severity,
+                        "valid": None,
+                    }
+                    if self.args.store_raw_keys:
+                        key_data["key"] = key
+                    self.progress.add_key(key_data)
+                    self._incr_stat(provider, "local (git)")
+                    keys_to_validate.append((key_data, key))
+                self.progress.mark_processed(identifier)
+                if len(self.progress.processed) % self.args.checkpoint_interval == 0:
+                    self.progress.save_progress()
+
+        tasks = [asyncio.create_task(process_commit(c)) for c in commits]
+        iterator = asyncio.as_completed(tasks)
+        if tqdm:
+            iterator = tqdm(
+                iterator, total=len(tasks), desc=f"Git history {provider}"
+            )
+        for coro in iterator:
+            await coro
+
+        if self.args.validate and keys_to_validate:
+            logger.info(
+                "Validating %s %s keys...", len(keys_to_validate), provider
+            )
+            await self.batch_validate_keys(keys_to_validate, provider)
+
+        self.progress.save_progress()
+        logger.info(
+            "Completed %s git-history audit: %s total unique keys found",
+            provider, len(self.progress.found_keys),
+        )
