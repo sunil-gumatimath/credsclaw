@@ -164,3 +164,26 @@ def test_audit_git_history_with_actual_repo(tmp_path):
     assert tracker.found_keys, "Expected at least one finding in git history scan"
     assert tracker.found_keys[0]["provider"] == "OpenAI"
     assert "commit" in tracker.found_keys[0]
+
+
+@pytest.mark.asyncio
+async def test_discover_recent_repositories_success(tmp_path):
+    args = _build_args(language="python", min_stars=50)
+    tracker = ProgressTracker(checkpoint_file=str(tmp_path / "checkpoint.json"), store_raw_keys=False)
+    auditor = APIAuditor("fake-token", RateLimiter(), tracker, args)
+
+    mock_data = {
+        "items": [
+            {"full_name": "owner1/repo1"},
+            {"full_name": "owner2/repo2"},
+        ]
+    }
+
+    with patch.object(auditor, "request_with_retry", return_value=mock_data) as mock_request:
+        repos = await auditor.discover_recent_repositories(7)
+        assert repos == ["owner1/repo1", "owner2/repo2"]
+        mock_request.assert_called_once()
+        called_url = mock_request.call_args[0][0]
+        assert "pushed:>" in called_url
+        assert "language:python" in called_url
+        assert "stars:>=50" in called_url

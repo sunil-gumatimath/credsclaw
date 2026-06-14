@@ -93,17 +93,46 @@ async def main() -> None:
         )
         rate_limiter = RateLimiter()
 
-        query_suffix = f" repo:{args.repo}" if args.repo else ""
-        if args.mode == "code" and args.extensions:
-            for ext in parse_csv_arg(args.extensions):
-                query_suffix += f" extension:{ext.lstrip('.')}"
-
         selected = [p.strip().lower() for p in args.providers.split(",") if p.strip()]
         # Expand "all" to every available provider key
         if "all" in selected:
             selected = list(PROVIDER_CONFIGS.keys())
 
         async with APIAuditor(token, rate_limiter, progress, args) as auditor:
+            # If recent_repos_days is set, discover repositories first
+            discovered_repos = []
+            if args.recent_repos_days is not None:
+                discovered_repos = await auditor.discover_recent_repositories(args.recent_repos_days)
+                if not discovered_repos:
+                    logger.warning("No recently updated repositories found matching criteria. Exiting.")
+                    return
+
+            # Generate suffix list
+            # A query suffix is either derived from:
+            # 1. A single repo: `repo:owner/repo`
+            # 2. Chunked discovered repos: `(repo:A OR repo:B OR ...)`
+            # 3. Nothing (global search)
+            suffix_chunks = []
+            if args.repo:
+                suffix_chunks = [f" repo:{args.repo}"]
+            elif args.recent_repos_days is not None:
+                # Group discovered repos in chunks of 5
+                chunk_size = 5
+                for i in range(0, len(discovered_repos), chunk_size):
+                    chunk = discovered_repos[i:i + chunk_size]
+                    repo_terms = ",".join(chunk)
+                    suffix_chunks.append(f" repo:{repo_terms}")
+            else:
+                suffix_chunks = [""]
+
+            # Add extension filters if mode == code
+            if args.mode == "code" and args.extensions:
+                ext_filter = ""
+                for ext in parse_csv_arg(args.extensions):
+                    ext_filter += f" extension:{ext.lstrip('.')}"
+                # Append extension filters to each suffix chunk
+                suffix_chunks = [s + ext_filter for s in suffix_chunks]
+
             provider_tasks = []
             for provider_key in selected:
                 config_entry = PROVIDER_CONFIGS.get(provider_key)
@@ -111,28 +140,30 @@ async def main() -> None:
                     logger.warning("Unknown provider: %s, skipping", provider_key)
                     continue
                 name, search_term, pattern = config_entry
-                query = f"{search_term}{query_suffix}"
 
-                if args.mode == "local":
-                    if not args.dir:
-                        raise ValueError("--dir is required for local mode")
-                    provider_tasks.append(
-                        auditor.audit_local_directory(name, pattern, args.dir)
-                    )
-                elif args.mode == "git-history":
-                    if not args.dir:
-                        raise ValueError("--dir is required for git-history mode")
-                    provider_tasks.append(
-                        auditor.audit_git_history(name, pattern, args.dir)
-                    )
-                elif args.mode == "commits":
-                    provider_tasks.append(
-                        auditor.audit_commit_messages(name, query, pattern)
-                    )
-                else:
-                    provider_tasks.append(
-                        auditor.audit_api_keys(name, query, pattern)
-                    )
+                for suffix in suffix_chunks:
+                    query = f"{search_term}{suffix}"
+
+                    if args.mode == "local":
+                        if not args.dir:
+                            raise ValueError("--dir is required for local mode")
+                        provider_tasks.append(
+                            auditor.audit_local_directory(name, pattern, args.dir)
+                        )
+                    elif args.mode == "git-history":
+                        if not args.dir:
+                            raise ValueError("--dir is required for git-history mode")
+                        provider_tasks.append(
+                            auditor.audit_git_history(name, pattern, args.dir)
+                        )
+                    elif args.mode == "commits":
+                        provider_tasks.append(
+                            auditor.audit_commit_messages(name, query, pattern)
+                        )
+                    else:
+                        provider_tasks.append(
+                            auditor.audit_api_keys(name, query, pattern)
+                        )
 
             if provider_tasks:
                 await asyncio.gather(*provider_tasks)

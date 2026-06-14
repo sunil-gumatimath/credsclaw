@@ -87,3 +87,25 @@ def test_parse_args_cli_overrides_config():
     args = parse_args(["--mode", "code", "--confidence-threshold", "60.0"], config=config)
     assert args.mode == "code"
     assert args.confidence_threshold == 60.0
+
+
+def test_parse_args_recent_repos_days_validation():
+    """parse_args should error when mutually exclusive or unsupported options are combined with --recent-repos-days."""
+    import pytest
+
+    # 1. Not allowed with --repo
+    with pytest.raises(SystemExit):
+        parse_args(["--recent-repos-days", "7", "--repo", "owner/repo"])
+
+    # 2. Not allowed with --dir
+    with pytest.raises(SystemExit):
+        parse_args(["--recent-repos-days", "7", "--dir", "."])
+
+    # 3. Only allowed with code or commits mode (local mode should error)
+    with pytest.raises(SystemExit):
+        parse_args(["--recent-repos-days", "7", "--mode", "local"])
+
+    # 4. Valid combination
+    args = parse_args(["--recent-repos-days", "7", "--mode", "code"])
+    assert args.recent_repos_days == 7
+    assert args.mode == "code"

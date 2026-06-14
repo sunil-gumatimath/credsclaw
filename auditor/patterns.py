@@ -69,19 +69,19 @@ DEFAULT_CONFIDENCE_THRESHOLD = 50.0
 # Provider registry  (name_key -> (display_name, search_prefix, pattern))
 # ---------------------------------------------------------------------------
 PROVIDER_CONFIGS = {
-    "anthropic":   ("Anthropic",   "sk-ant-",      ANTHROPIC_KEY_PATTERN),
-    "openai":      ("OpenAI",      "sk-",          OPENAI_KEY_PATTERN),
-    "google":      ("Google",      "AIza",         GOOGLE_AI_KEY_PATTERN),
-    "aws":         ("AWS",         "AKIA",         AWS_ACCESS_KEY_PATTERN),
-    "stripe":      ("Stripe",      "sk_",          STRIPE_KEY_PATTERN),
-    "github":      ("GitHub",      "ghp_",         GITHUB_TOKEN_PATTERN),
-    "slack":       ("Slack",       "xoxb-",        SLACK_TOKEN_PATTERN),
-    "twilio":      ("Twilio",      "SK",           TWILIO_API_KEY_PATTERN),
-    "sendgrid":    ("SendGrid",    "SG.",          SENDGRID_API_KEY_PATTERN),
-    "huggingface": ("HuggingFace", "hf_",          HUGGINGFACE_KEY_PATTERN),
-    "cloudflare":  ("Cloudflare",  "cfk_",         CLOUDFLARE_TOKEN_PATTERN),
-    "supabase":    ("Supabase",    "sbp_",         SUPABASE_KEY_PATTERN),
-    "azure":       ("Azure",       "Endpoint=sb",  AZURE_CONNECTION_STRING_PATTERN),
+    "anthropic":   ("Anthropic",   "sk-ant-",                                          ANTHROPIC_KEY_PATTERN),
+    "openai":      ("OpenAI",      "sk-",                                              OPENAI_KEY_PATTERN),
+    "google":      ("Google",      "AIza",                                             GOOGLE_AI_KEY_PATTERN),
+    "aws":         ("AWS",         "AKIA",                                             AWS_ACCESS_KEY_PATTERN),
+    "stripe":      ("Stripe",      "sk_ OR rk_ OR whsec_",                             STRIPE_KEY_PATTERN),
+    "github":      ("GitHub",      "ghp_ OR github_pat_ OR gho_ OR ghs_ OR ghr_ OR ghu_", GITHUB_TOKEN_PATTERN),
+    "slack":       ("Slack",       "xoxb- OR xapp- OR xwfp- OR hooks.slack.com",       SLACK_TOKEN_PATTERN),
+    "twilio":      ("Twilio",      "SK OR AC",                                         TWILIO_API_KEY_PATTERN),
+    "sendgrid":    ("SendGrid",    "SG.",                                              SENDGRID_API_KEY_PATTERN),
+    "huggingface": ("HuggingFace", "hf_",                                              HUGGINGFACE_KEY_PATTERN),
+    "cloudflare":  ("Cloudflare",  "cfk_ OR cfut_ OR cfat_",                           CLOUDFLARE_TOKEN_PATTERN),
+    "supabase":    ("Supabase",    "sbp_ OR sb_publishable_ OR sb_secret_",            SUPABASE_KEY_PATTERN),
+    "azure":       ("Azure",       "Endpoint=sb",                                      AZURE_CONNECTION_STRING_PATTERN),
 }
 
 # Provider names that support live validation

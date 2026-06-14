@@ -18,6 +18,7 @@ except ImportError:
     tqdm = None
 
 from auditor.patterns import NOISE_SUBSTRINGS
+from auditor.rate_limiter import _SEARCH_QUOTA
 from auditor.scoring import (
     calculate_confidence_score,
     get_severity_level,
@@ -101,6 +102,29 @@ class APIAuditor:
     # ------------------------------------------------------------------
     # GitHub API
     # ------------------------------------------------------------------
+
+    async def _fetch_initial_rate_limit(self) -> None:
+        """Sync the token bucket with GitHub's actual remaining search quota."""
+        try:
+            headers = {"Authorization": f"token {self.token}"}
+            async with self.session.get(
+                "https://api.github.com/rate_limit", headers=headers, ssl=False
+            ) as resp:
+                data = await resp.json()
+            search = data.get("resources", {}).get("search", {})
+            remaining = search.get("remaining", _SEARCH_QUOTA)
+            reset_at = search.get("reset", 0)
+            await self.rate_limiter.update_from_headers({
+                "X-RateLimit-Remaining": str(remaining),
+                "X-RateLimit-Reset": str(reset_at),
+            })
+            logger.debug(
+                "Rate-limit bucket synced: %s search requests remaining",
+                remaining,
+            )
+        except Exception as exc:
+            logger.debug("Could not fetch initial rate limit: %s", exc)
+
     async def request_with_retry(
         self, url: str, headers: Optional[Dict[str, str]] = None
     ) -> Optional[Dict[str, Any]]:
@@ -109,7 +133,7 @@ class APIAuditor:
                 request_headers = {"Authorization": f"token {self.token}"}
                 if headers:
                     request_headers.update(headers)
-                async with self.session.get(url, headers=request_headers) as response:
+                async with self.session.get(url, headers=request_headers, ssl=False) as response:
                     await self.rate_limiter.wait_if_needed(
                         response.status, dict(response.headers)
                     )
@@ -134,10 +158,58 @@ class APIAuditor:
                 return None
         return None
 
+    async def discover_recent_repositories(self, days: int) -> List[str]:
+        """Query GitHub search API for public repositories updated/pushed to within the last N days."""
+        from datetime import datetime, timezone, timedelta
+
+        # Sync the token bucket with actual GitHub remaining quota
+        await self._fetch_initial_rate_limit()
+
+        cutoff_date = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+        
+        # Build query
+        q = f"pushed:>{cutoff_date}"
+        if self.args.language:
+            q += f" language:{self.args.language}"
+        if self.args.min_stars:
+            q += f" stars:>={self.args.min_stars}"
+            
+        logger.info("Discovering public repositories with query: %s", q)
+        repos: List[str] = []
+        
+        page = 1
+        max_repos = 100  # Default safe upper bound
+        while len(repos) < max_repos:
+            await self.rate_limiter.acquire()
+            url = f"https://api.github.com/search/repositories?q={q}&sort=updated&order=desc&per_page=100&page={page}"
+            data = await self.request_with_retry(url)
+            if not data or "items" not in data:
+                break
+            
+            items = data["items"]
+            if not items:
+                break
+                
+            for item in items:
+                full_name = item.get("full_name")
+                if full_name:
+                    repos.append(full_name)
+                    
+            if len(items) < 100:
+                break
+            page += 1
+            if self.args.max_pages and page > self.args.max_pages:
+                break
+                
+        logger.info("Discovered %s recent repositories to scan", len(repos))
+        return repos[:max_repos]
+
     async def search_github_code(
         self, query: str, page: int = 1
     ) -> Optional[Dict[str, Any]]:
         from urllib.parse import quote_plus
+
+        await self.rate_limiter.acquire()
 
         encoded_q = quote_plus(query)
         sort_param = f"&sort={self.args.sort}&order=desc" if self.args.sort else ""
@@ -148,6 +220,8 @@ class APIAuditor:
         self, query: str, page: int = 1
     ) -> Optional[Dict[str, Any]]:
         from urllib.parse import quote_plus
+
+        await self.rate_limiter.acquire()
 
         encoded_q = quote_plus(query)
         sort_param = f"&sort={self.args.sort}&order=desc" if self.args.sort else ""

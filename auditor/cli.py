@@ -126,6 +126,10 @@ Examples:
     parser.add_argument("--language", type=str, help="Filter by programming language")
     parser.add_argument("--updated-after", type=str, help="Filter repos updated after date (YYYY-MM-DD)")
     parser.add_argument("--sort", type=str, choices=["indexed", ""], default="indexed", help="Sort mode")
+    parser.add_argument(
+        "--recent-repos-days", type=int, default=None,
+        help="Discover and scan public repositories updated/pushed to in the last N days",
+    )
 
     # Checkpoint / resume
     parser.add_argument("--resume", action="store_true", help="Continue from previous checkpoint")
@@ -190,5 +194,14 @@ def parse_args(argv: Optional[List[str]] = None, config: Optional[dict] = None) 
         fmt_to_ext = {"json": "json", "csv": "csv", "txt": "txt", "html": "html"}
         ext = fmt_to_ext.get(args.output_format, "json")
         args.output_file = f"output/audit_results.{ext}"
+
+    # Validation
+    if args.recent_repos_days is not None:
+        if args.repo:
+            parser.error("argument --recent-repos-days: not allowed with argument --repo")
+        if args.dir:
+            parser.error("argument --recent-repos-days: not allowed with argument --dir")
+        if args.mode not in ("code", "commits"):
+            parser.error("argument --recent-repos-days: only allowed with modes 'code' or 'commits'")
 
     return args

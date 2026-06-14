@@ -1,8 +1,8 @@
 repos:
   - repo: local
     hooks:
-      - id: api-key-auditor
-        name: Exposed API Key Auditor
+      - id: credsclaw
+        name: CredsClaw
         description: Scans staged files for exposed API keys and secrets
         entry: python -m auditor --mode local --dir . --confidence-threshold 60.0 --dry-run
         language: system
