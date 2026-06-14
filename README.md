@@ -12,6 +12,7 @@
 
 - [Features](#features)
 - [Quick Start](#quick-start)
+- [GitHub Token Setup](#github-token-setup)
 - [Installation](#installation)
 - [Usage](#usage)
 - [Scan Modes](#scan-modes)
@@ -55,7 +56,7 @@
 git clone <repo-url> && cd credsclaw
 pip install -e .
 
-# 2. Set your GitHub token
+# 2. Set your GitHub token (see "GitHub Token Setup" below)
 echo "GITHUB_TOKEN=ghp_..." > .env
 
 # 3. Run a scan
@@ -64,6 +65,26 @@ python -m auditor --repo owner/repo --providers openai,github,aws
 # 4. Try local directory scan
 python -m auditor --mode local --dir . --providers all
 ```
+
+---
+
+## GitHub Token Setup
+
+CredsClaw needs a GitHub personal access token to search code and commits. Here's how to create one:
+
+1. **Go to** [GitHub Settings → Developer settings → Personal access tokens → Tokens (classic)](https://github.com/settings/tokens)
+2. **Click** *Generate new token* → *Generate new token (classic)*
+3. **Give it a name** (e.g., `credsclaw`)
+4. **Set expiration** — choose 30/60/90 days or *No expiration*
+5. **Select scopes** — check **`repo`** (for private repos) or just **`public_repo`** (for public repos only) + **`read:org`** (optional, for org-wide search)
+6. **Click** *Generate token* and **copy the token** (starts with `ghp_` or `github_pat_`)
+7. **Save it** in a `.env` file in the project root:
+
+   ```bash
+   echo "GITHUB_TOKEN=your_token_here" > .env
+   ```
+
+> **Note:** The token is only used to authenticate with GitHub's API. It's never stored in results or sent anywhere else.
 
 ---
 
@@ -261,7 +282,7 @@ CLI flags always take precedence over config file values.
 
 | Variable | Required | Description |
 |---|---|---|
-| `GITHUB_TOKEN` | For GitHub modes | Personal access token with `repo` or `public_repo` scope |
+| `GITHUB_TOKEN` | For GitHub modes | Personal access token with `repo` or `public_repo` scope ([how to create](#github-token-setup)) |
 | `OUTPUT_ENCRYPTION_KEY` | For encrypted output | Fernet key (32 base64-encoded bytes) |
 
 Both can be loaded from a `.env` file in the project root.
