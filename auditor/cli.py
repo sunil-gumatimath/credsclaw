@@ -69,6 +69,9 @@ Examples:
   Basic GitHub code scan:
     python -m auditor --repo owner/repo --providers openai,github
 
+  Discover & scan recent repos:
+    python -m auditor --recent-repos-days 7 --providers all
+
   Local directory scan:
     python -m auditor --mode local --dir ./project --providers openai,aws
 
@@ -86,95 +89,94 @@ Examples:
 """,
     )
 
-    # Core
-    parser.add_argument(
-        "--config", type=str, default=DEFAULT_CONFIG_FILE,
-        help=f"Config file path (default: {DEFAULT_CONFIG_FILE})",
-    )
-    parser.add_argument(
-        "--repo", type=str, default="",
-        help="Specific repository to search (format: owner/repo)",
-    )
-    parser.add_argument(
-        "--extensions", type=str, default="",
-        help="File extensions to search (comma-separated, e.g., py,js,env)",
-    )
-    parser.add_argument(
-        "--dir", type=str,
-        help="Local directory path to scan (for mode=local or git-history)",
-    )
-    parser.add_argument(
+    # ── Core ──────────────────────────────────────────────────────────
+    core = parser.add_argument_group("Core")
+    core.add_argument(
         "--mode", type=str, choices=["code", "commits", "local", "git-history"],
         default="code", help="Search mode: code, commits, local, or git-history",
     )
-    parser.add_argument(
-        "--validate", action="store_true",
-        help="Validate found API keys against provider APIs",
+    core.add_argument(
+        "--providers", type=str, default="openai,anthropic",
+        help="Providers (comma-separated): openai,anthropic,google,aws,stripe,github,slack,twilio,sendgrid,huggingface,cloudflare,supabase,azure",
     )
-    parser.add_argument(
-        "--output-format", type=str, choices=["json", "csv", "txt", "html"],
-        default="json", help="Output format (json, csv, txt, html)",
+    core.add_argument(
+        "--repo", type=str, default="",
+        help="Specific repository to search (format: owner/repo)",
     )
-    parser.add_argument(
-        "--output-file", type=str, default="",
-        help="Output file path (default: audit_results.{format})",
+    core.add_argument(
+        "--dir", type=str,
+        help="Local directory path to scan (for mode=local or git-history)",
+    )
+    core.add_argument(
+        "--config", type=str, default=DEFAULT_CONFIG_FILE,
+        help=f"Config file path (default: {DEFAULT_CONFIG_FILE})",
     )
 
-    # GitHub filters
-    parser.add_argument("--max-pages", type=int, help="Maximum pages to fetch from GitHub API")
-    parser.add_argument("--min-stars", type=int, help="Minimum stars for repositories")
-    parser.add_argument("--language", type=str, help="Filter by programming language")
-    parser.add_argument("--updated-after", type=str, help="Filter repos updated after date (YYYY-MM-DD)")
-    parser.add_argument("--sort", type=str, choices=["indexed", ""], default="indexed", help="Sort mode")
-    parser.add_argument(
+    # ── GitHub Filters ────────────────────────────────────────────────
+    gh = parser.add_argument_group("GitHub Filters")
+    gh.add_argument(
         "--recent-repos-days", type=int, default=None,
-        help="Discover and scan public repositories updated/pushed to in the last N days",
+        help="Discover repos pushed to in last N days (mode: code/commits, disables --repo/--dir)",
+    )
+    gh.add_argument("--max-pages", type=int, help="Maximum API pages to fetch")
+    gh.add_argument("--min-stars", type=int, help="Minimum repository stars")
+    gh.add_argument("--language", type=str, help="Filter by programming language")
+    gh.add_argument("--updated-after", type=str, help="Only repos updated after date (YYYY-MM-DD)")
+    gh.add_argument("--sort", type=str, choices=["indexed", ""], default="indexed", help="Sort mode (default: indexed)")
+    gh.add_argument(
+        "--extensions", type=str, default="",
+        help="File extensions to search (comma-separated, e.g., py,js,env)",
     )
 
-    # Checkpoint / resume
-    parser.add_argument("--resume", action="store_true", help="Continue from previous checkpoint")
-    parser.add_argument("--checkpoint-file", type=str, default="output/progress.json", help="Checkpoint file path")
-    parser.add_argument("--since-checkpoint", action="store_true", help="Only process items newer than checkpoint timestamp")
-
-    # Performance
-    parser.add_argument(
+    # ── Performance & Checkpoint ──────────────────────────────────────
+    perf = parser.add_argument_group("Performance & Checkpoint")
+    perf.add_argument(
         "--max-concurrency", type=int, default=10,
         help="Max concurrent item processors",
     )
-    parser.add_argument(
-        "--checkpoint-interval", type=int, default=25,
-        help="Save checkpoint every N processed items",
-    )
-    parser.add_argument(
+    perf.add_argument(
         "--dry-run", action="store_true",
         help="Search only; do not fetch contents or export findings",
     )
-    parser.add_argument(
+    perf.add_argument("--resume", action="store_true", help="Continue from previous checkpoint")
+    perf.add_argument("--checkpoint-file", type=str, default="output/progress.json", help="Checkpoint file path")
+    perf.add_argument("--since-checkpoint", action="store_true", help="Only process items newer than checkpoint timestamp")
+    perf.add_argument(
+        "--checkpoint-interval", type=int, default=25,
+        help="Save checkpoint every N processed items",
+    )
+    perf.add_argument(
         "--timeout", type=int, default=10,
         help="Validation request timeout in seconds",
     )
 
-    # Providers & confidence
-    parser.add_argument(
-        "--providers", type=str, default="openai,anthropic",
-        help="Providers (comma-separated): openai,anthropic,google,aws,stripe,github,slack,twilio,sendgrid,huggingface,cloudflare,supabase,azure",
+    # ── Output ────────────────────────────────────────────────────────
+    out = parser.add_argument_group("Output")
+    out.add_argument(
+        "--output-format", type=str, choices=["json", "csv", "txt", "html"],
+        default="json", help="Output format (json, csv, txt, html)",
     )
-    parser.add_argument(
+    out.add_argument(
+        "--output-file", type=str, default="",
+        help="Output file path (default: audit_results.{format})",
+    )
+    out.add_argument("--validate", action="store_true", help="Validate found keys against provider APIs")
+
+    # ── Security & Filtering ──────────────────────────────────────────
+    sec = parser.add_argument_group("Security & Filtering")
+    sec.add_argument("--store-raw-keys", action="store_true", help="Store raw keys in output (unsafe)")
+    sec.add_argument("--encrypt-output", action="store_true", help="Encrypt output file using Fernet key")
+    sec.add_argument("--encryption-key", type=str, default="", help="Fernet key (or use OUTPUT_ENCRYPTION_KEY env var)")
+    sec.add_argument(
         "--confidence-threshold", type=float, default=50.0,
         help="Minimum confidence score (0-100) to report a key",
     )
+    sec.add_argument("--allow-patterns", type=str, default="", help="Comma-separated regex allow patterns")
+    sec.add_argument("--deny-patterns", type=str, default="", help="Comma-separated regex deny patterns")
 
-    # Filtering
-    parser.add_argument("--allow-patterns", type=str, default="", help="Comma-separated regex allow patterns")
-    parser.add_argument("--deny-patterns", type=str, default="", help="Comma-separated regex deny patterns")
-
-    # Security
-    parser.add_argument("--store-raw-keys", action="store_true", help="Store raw keys in checkpoint and output (unsafe)")
-    parser.add_argument("--encrypt-output", action="store_true", help="Encrypt output file using Fernet key")
-    parser.add_argument("--encryption-key", type=str, default="", help="Fernet key (or use OUTPUT_ENCRYPTION_KEY env var)")
-
-    # Utility
-    parser.add_argument("--generate-pre-commit-hook", action="store_true", help="Generate a .pre-commit-config.yaml file")
+    # ── Utility ───────────────────────────────────────────────────────
+    util = parser.add_argument_group("Utility")
+    util.add_argument("--generate-pre-commit-hook", action="store_true", help="Generate a .pre-commit-config.yaml file")
 
     return parser
 
