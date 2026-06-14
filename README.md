@@ -407,37 +407,39 @@ tests/                          # Module-scoped test files
 
 ### Data Flow
 
-```
-CLI args + YAML config
-        │
-        ▼
-  parse_args()            ←── build_arg_parser()
-        │
-        ▼
-  load_dotenv()           ←── GITHUB_TOKEN, OUTPUT_ENCRYPTION_KEY
-        │
-        ▼
-  ProgressTracker         ←── checkpoint/resume (output/progress.json)
-        │
-        ▼
-  APIAuditor (async)
-    ├── _fetch_initial_rate_limit()  ←── sync token bucket from GitHub
-    ├── discover_recent_repositories() ←── (optional) find repos pushed in last N days
-    ├── audit_api_keys()      ←── GitHub code search
-    ├── audit_commit_messages() ←── GitHub commit search
-    ├── audit_local_directory() ←── recursive file scan
-    └── audit_git_history()   ←── `git log --all` + diffs
-        │
-        ├── extract_candidates()   ←── regex + is_probable_secret()
-        ├── batch_validate_keys()  ←── optional API validation
-        ├── rate_limiter.acquire() ←── token bucket per request
-        └── ProgressTracker.save_progress()
-        │
-        ▼
-  export_results() / export_html_results()
-        │
-        ▼
-  output/audit_results.{json,csv,txt,html}
+```mermaid
+flowchart TD
+    A["CLI args + YAML config"] --> B["parse_args() ← build_arg_parser()"]
+    B --> C["load_dotenv() ← GITHUB_TOKEN"]
+    C --> D["ProgressTracker ← checkpoint/resume"]
+    D --> E["RateLimiter ← init token bucket"]
+
+    E --> F{recent-repos-days?}
+    F -- Yes --> G["discover_recent_repositories()"]
+    G --> H["_fetch_initial_rate_limit()"]
+    H --> I["Chunk repos (groups of 5)"]
+    I --> J["For each chunk → generate query suffix"]
+
+    F -- No --> H2["_fetch_initial_rate_limit()"]
+    H2 --> J
+
+    J --> K["APIAuditor (async) per provider"]
+    K --> L["audit_api_keys()"]
+    K --> M["audit_commit_messages()"]
+    K --> N["audit_local_directory()"]
+    K --> O["audit_git_history()"]
+
+    L & M --> P["rate_limiter.acquire()"]
+    P --> Q["GitHub API request"]
+    Q --> R["extract_candidates() ← regex"]
+    R --> S["batch_validate_keys() (optional)"]
+    S --> T["ProgressTracker.save_progress()"]
+
+    N --> R
+    O --> R
+
+    T --> U["export_results() / export_html_results()"]
+    U --> V["output/audit_results.{json,csv,txt,html}"]
 ```
 
 ---
