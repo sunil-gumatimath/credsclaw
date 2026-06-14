@@ -3,7 +3,7 @@
 > **Async Python CLI** that scans GitHub repositories, local directories, and git history for leaked API keys and secrets across **13 providers**. Features intelligent confidence scoring, deduplication, checkpoint/resume, and rich HTML reports.
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](# )
-[![Tests](https://img.shields.io/badge/tests-48%20passing-brightgreen)](# )
+[![Tests](https://img.shields.io/badge/tests-50%20passing-brightgreen)](# )
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow)](# )
 
 ---
@@ -32,6 +32,7 @@
 | Feature | Description |
 |---|---|
 | **4 scan modes** | GitHub code search, commit messages, local directory, git history |
+| **Recent-repo discovery** | Auto-discover repos pushed to in last N days and scan them |
 | **13 provider patterns** | OpenAI, Anthropic, Google, AWS, Stripe, GitHub, Slack, Twilio, SendGrid, HuggingFace, Cloudflare, Supabase, Azure |
 | **Confidence scoring** | Multi-factor analysis: Shannon entropy, context keywords, length, character diversity, noise penalties |
 | **Severity tiers** | CRITICAL (80+), HIGH (60-79), MEDIUM (40-59), LOW (<40) |
@@ -127,6 +128,7 @@ python -m auditor --repo owner/repo --providers all --validate
 | `--store-raw-keys` | off | Store raw keys in output (unsafe, use encryption) |
 | `--encrypt-output` | off | Encrypt results with Fernet |
 | `--config` | `auditor.yaml` | YAML configuration file path |
+| `--recent-repos-days` | (empty) | Discover repos pushed to in last N days (mode: `code`/`commits` only, not compatible with `--repo`/`--dir`) |
 | `--resume` | off | Continue from previous checkpoint |
 | `--generate-pre-commit-hook` | off | Write `.pre-commit-config.yaml` and exit |
 | `--help` | | Show full argument reference |
@@ -135,6 +137,7 @@ python -m auditor --repo owner/repo --providers all --validate
 
 | Flag | Description |
 |---|---|
+| `--recent-repos-days` | Discover repos pushed to in last N days (disables `--repo`/`--dir`) |
 | `--max-pages` | Maximum GitHub API pages |
 | `--min-stars` | Minimum repository stars |
 | `--language` | Programming language filter |
@@ -153,6 +156,12 @@ Searches GitHub's code index for exposed keys. Requires a `GITHUB_TOKEN` (set in
 
 ```bash
 python -m auditor --repo django/django --providers openai,stripe
+```
+
+Use `--recent-repos-days` to auto-discover and scan public repos pushed to recently:
+
+```bash
+python -m auditor --recent-repos-days 7 --providers all --mode code
 ```
 
 ### `commits` — GitHub Commit Message Search
@@ -363,7 +372,7 @@ auditor/                        # Installable Python package
 ├── tracker.py                  # Checkpoint/resume state management
 ├── cli.py                      # Argparse builder, config merge, pre-commit hook
 ├── config.py                   # YAML config file loader
-├── rate_limiter.py             # GitHub API rate limiter with exponential backoff
+├── rate_limiter.py             # Token-bucket rate limiter (+ exponential backoff) to prevent concurrent-task quota exhaustion
 └── utils.py                    # ISO-8601 parsing, UTC timestamp helper
 
 tests/                          # Module-scoped test files
@@ -391,6 +400,8 @@ CLI args + YAML config
         │
         ▼
   APIAuditor (async)
+    ├── _fetch_initial_rate_limit()  ←── sync token bucket from GitHub
+    ├── discover_recent_repositories() ←── (optional) find repos pushed in last N days
     ├── audit_api_keys()      ←── GitHub code search
     ├── audit_commit_messages() ←── GitHub commit search
     ├── audit_local_directory() ←── recursive file scan
@@ -398,6 +409,7 @@ CLI args + YAML config
         │
         ├── extract_candidates()   ←── regex + is_probable_secret()
         ├── batch_validate_keys()  ←── optional API validation
+        ├── rate_limiter.acquire() ←── token bucket per request
         └── ProgressTracker.save_progress()
         │
         ▼
@@ -423,7 +435,7 @@ pip install pytest
 ### Running Tests
 
 ```bash
-python -m pytest tests/ -v        # 48 tests
+python -m pytest tests/ -v        # 50 tests
 python -m pytest tests/ -q        # compact output
 ```
 
