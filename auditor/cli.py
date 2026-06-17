@@ -149,6 +149,10 @@ Examples:
         "--timeout", type=int, default=10,
         help="Validation request timeout in seconds",
     )
+    perf.add_argument(
+        "--no-ssl-verify", action="store_true",
+        help="Disable SSL certificate verification (use behind corporate proxies)",
+    )
 
     # ── Output ────────────────────────────────────────────────────────
     out = parser.add_argument_group("Output")

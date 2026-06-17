@@ -2,7 +2,7 @@
 
 > **Async Python CLI** that scans GitHub repositories, local directories, and git history for leaked API keys and secrets across **13 providers**. Features intelligent confidence scoring, deduplication, checkpoint/resume, and rich HTML reports.
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](# )
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](# )
 [![Tests](https://img.shields.io/badge/tests-50%20passing-brightgreen)](# )
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow)](# )
 
@@ -148,6 +148,7 @@ python -m auditor --repo owner/repo --providers all --validate
 | `--max-concurrency` | `10` | Parallel file processors |
 | `--store-raw-keys` | off | Store raw keys in output (unsafe, use encryption) |
 | `--encrypt-output` | off | Encrypt results with Fernet |
+| `--no-ssl-verify` | off | Disable SSL certificate verification (for corporate proxies) |
 | `--config` | `auditor.yaml` | YAML configuration file path |
 | `--recent-repos-days` | (empty) | Discover repos pushed to in last N days (mode: `code`/`commits` only, not compatible with `--repo`/`--dir`) |
 | `--resume` | off | Continue from previous checkpoint |

@@ -10,6 +10,8 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import ssl
+
 import aiohttp
 
 try:
@@ -63,6 +65,7 @@ class APIAuditor:
         )
         self.stats_by_provider: Dict[str, Dict[str, int]] = {}
         self.stats_by_repo: Dict[str, int] = {}
+        self._provider_found_count: Dict[str, int] = {}
         self.since_dt = None
         if args.since_checkpoint and progress.checkpoint_timestamp:
             self.since_dt = parse_iso8601(progress.checkpoint_timestamp)
@@ -71,8 +74,17 @@ class APIAuditor:
     # Lifecycle
     # ------------------------------------------------------------------
     async def __aenter__(self):
+        connector_kwargs: Dict[str, Any] = {}
+        if getattr(self.args, "no_ssl_verify", False):
+            ssl_ctx = ssl.create_default_context()
+            ssl_ctx.check_hostname = False
+            ssl_ctx.verify_mode = ssl.CERT_NONE
+            connector_kwargs["ssl"] = ssl_ctx
+            logger.warning("SSL certificate verification is disabled")
+        connector = aiohttp.TCPConnector(**connector_kwargs)
         self.session = aiohttp.ClientSession(
-            headers={"Authorization": f"token {self.token}"}
+            headers={"Authorization": f"token {self.token}"},
+            connector=connector,
         )
         return self
 
@@ -89,6 +101,7 @@ class APIAuditor:
         )
         provider_stats["found"] += 1
         self.stats_by_repo[repo] = self.stats_by_repo.get(repo, 0) + 1
+        self._provider_found_count[provider] = self._provider_found_count.get(provider, 0) + 1
 
     def _record_validation(self, provider: str, valid: Optional[bool]) -> None:
         provider_stats = self.stats_by_provider.setdefault(
@@ -108,7 +121,7 @@ class APIAuditor:
         try:
             headers = {"Authorization": f"token {self.token}"}
             async with self.session.get(
-                "https://api.github.com/rate_limit", headers=headers, ssl=False
+                "https://api.github.com/rate_limit", headers=headers
             ) as resp:
                 data = await resp.json()
             search = data.get("resources", {}).get("search", {})
@@ -133,18 +146,31 @@ class APIAuditor:
                 request_headers = {"Authorization": f"token {self.token}"}
                 if headers:
                     request_headers.update(headers)
-                async with self.session.get(url, headers=request_headers, ssl=False) as response:
-                    await self.rate_limiter.wait_if_needed(
-                        response.status, dict(response.headers)
-                    )
+                async with self.session.get(url, headers=request_headers) as response:
+                    resp_headers = dict(response.headers)
 
                     if response.status in {403, 429}:
+                        # Prefer GitHub's Retry-After over blind exponential backoff.
+                        retry_after = resp_headers.get("Retry-After")
+                        if retry_after:
+                            try:
+                                wait_time = max(1, int(retry_after))
+                            except (ValueError, TypeError):
+                                wait_time = min(2 ** attempt, 300)
+                        else:
+                            wait_time = min(2 ** attempt, 300)
                         logger.warning(
-                            "Rate limit/auth issue for %s (status %s)",
-                            url, response.status,
+                            "Rate limit/auth issue for %s (status %s), waiting %ss",
+                            url, response.status, wait_time,
                         )
-                        await self.rate_limiter.exponential_backoff(attempt)
+                        await asyncio.sleep(wait_time)
+                        await self.rate_limiter.update_from_headers(resp_headers)
                         continue
+
+                    await self.rate_limiter.wait_if_needed(
+                        response.status, resp_headers
+                    )
+
                     if response.status == 404:
                         return None
 
@@ -263,20 +289,27 @@ class APIAuditor:
         """Return (is_likely_secret, confidence_score).
 
         Filters through deny/allow patterns, noise detection, and entropy analysis.
-        The caller uses the pre-calculated score to avoid double computation.
+        Noise substrings (example, dummy, …) cause a hard reject unless explicitly
+        overridden by an allow pattern.  The caller uses the pre-calculated score to
+        avoid double computation.
         """
         combined = f"{key} {context}"
         lowered = combined.lower()
 
         if self._matches_deny(combined):
             return False, 0.0
+
+        is_noise = any(noise in lowered for noise in NOISE_SUBSTRINGS)
+
+        # Allow pattern overrides the noise hard-reject.
         if self.compiled_allow and self._matches_allow(combined):
-            is_noise = any(noise in lowered for noise in NOISE_SUBSTRINGS)
             confidence = calculate_confidence_score(key, context, is_noise)
             return True, confidence
 
-        is_noise = any(noise in lowered for noise in NOISE_SUBSTRINGS)
-        confidence = calculate_confidence_score(key, context, is_noise)
+        if is_noise:
+            return False, 0.0
+
+        confidence = calculate_confidence_score(key, context, is_noise=False)
         return confidence >= self.args.confidence_threshold, confidence
 
     def extract_candidates(
@@ -441,8 +474,8 @@ class APIAuditor:
 
         self.progress.save_progress()
         logger.info(
-            "Completed %s audit: %s total unique keys found",
-            provider, len(self.progress.found_keys),
+            "Completed %s audit: %s keys found (session), %s total unique keys overall",
+            provider, self._provider_found_count.get(provider, 0), len(self.progress.found_keys),
         )
 
     async def audit_commit_messages(
@@ -551,8 +584,8 @@ class APIAuditor:
 
         self.progress.save_progress()
         logger.info(
-            "Completed %s commits audit: %s total unique keys found",
-            provider, len(self.progress.found_keys),
+            "Completed %s commits audit: %s keys found (session), %s total unique keys overall",
+            provider, self._provider_found_count.get(provider, 0), len(self.progress.found_keys),
         )
 
     async def audit_local_directory(
@@ -666,8 +699,8 @@ class APIAuditor:
 
         self.progress.save_progress()
         logger.info(
-            "Completed %s local audit: %s total unique keys found",
-            provider, len(self.progress.found_keys),
+            "Completed %s local audit: %s keys found (session), %s total unique keys overall",
+            provider, self._provider_found_count.get(provider, 0), len(self.progress.found_keys),
         )
 
     async def audit_git_history(
@@ -799,6 +832,6 @@ class APIAuditor:
 
         self.progress.save_progress()
         logger.info(
-            "Completed %s git-history audit: %s total unique keys found",
-            provider, len(self.progress.found_keys),
+            "Completed %s git-history audit: %s keys found (session), %s total unique keys overall",
+            provider, self._provider_found_count.get(provider, 0), len(self.progress.found_keys),
         )

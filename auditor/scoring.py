@@ -61,7 +61,7 @@ def calculate_confidence_score(key: str, context: str, is_noise: bool) -> float:
     )
     context_score = min(context_matches / 2.0, 1.0) * 25.0
 
-    # Noise filter penalty (0-20 points — full penalty if context is clean)
+    # Noise filter penalty (0-20 points — zero if noisy, 20 if clean)
     noise_score = 0.0 if is_noise else 20.0
 
     # Length contribution (0-15 points)

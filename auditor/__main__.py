@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import logging
 import os
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -195,6 +196,7 @@ async def main() -> None:
         logger.info("Progress file: %s", args.checkpoint_file)
     except Exception as exc:
         logger.error("Unexpected error: %s", exc, exc_info=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
