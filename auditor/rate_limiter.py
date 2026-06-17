@@ -73,8 +73,9 @@ class RateLimiter:
             await asyncio.sleep(wait_time)
             return
 
-        remaining = int(response_headers.get("X-RateLimit-Remaining", "1"))
-        reset_timestamp = int(response_headers.get("X-RateLimit-Reset", "0"))
+        async with self._lock:
+            remaining = self._remaining
+            reset_timestamp = self._reset_time
         if remaining == 0 and reset_timestamp:
             wait_time = max(1, int(reset_timestamp - time.time() + 3))
             logger.warning("Rate limit reached. Waiting %s seconds...", wait_time)

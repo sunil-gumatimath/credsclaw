@@ -13,7 +13,7 @@ RUN python -m pip install --upgrade pip \
 
 # Copy the package and install it so `python -m auditor` works from any directory
 COPY auditor/ ./auditor/
-RUN python -m pip install -e .
+RUN python -m pip install .
 
 RUN addgroup --system app && adduser --system --ingroup app app
 

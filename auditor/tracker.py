@@ -66,8 +66,10 @@ class ProgressTracker:
                 len(self.processed),
                 len(self.found_keys),
             )
+        except (json.JSONDecodeError, KeyError, TypeError) as exc:
+            logger.error("Failed to load progress (format error): %s", exc)
         except Exception as exc:
-            logger.error("Failed to load progress: %s", exc)
+            logger.warning("Unexpected error loading progress: %s", exc, exc_info=True)
 
     def save_progress(self) -> None:
         try:
@@ -88,8 +90,16 @@ class ProgressTracker:
 
             path = Path(self.checkpoint_file)
             path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(payload, f, indent=2)
+            import tempfile
+            import os
+            tmp_fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix='.tmp')
+            try:
+                with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                    json.dump(payload, f, indent=2)
+                os.replace(tmp_path, str(path))
+            except Exception:
+                os.unlink(tmp_path)
+                raise
         except Exception as exc:
             logger.error("Failed to save progress: %s", exc)
 

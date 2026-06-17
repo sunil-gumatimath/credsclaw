@@ -167,7 +167,10 @@ async def main() -> None:
                         )
 
             if provider_tasks:
-                await asyncio.gather(*provider_tasks)
+                results = await asyncio.gather(*provider_tasks, return_exceptions=True)
+                for result in results:
+                    if isinstance(result, Exception):
+                        logger.error("Provider task failed: %s", result, exc_info=result)
 
             if not args.dry_run:
                 encryption_key = args.encryption_key or os.getenv(

@@ -17,3 +17,14 @@ audit_results.txt
 output/
 docker-output/
 tests/
+.gitignore
+.pre-commit-config.yaml
+.env.example
+docker-compose.yml
+Dockerfile
+.dockerignore
+.mypy_cache
+.hypothesis
+*.egg-info/
+dist/
+build/

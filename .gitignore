@@ -17,13 +17,13 @@ nosetests.xml
 coverage.xml
 *.cover
 *.log
-.git
 .mypy_cache
 .pytest_cache
 .hypothesis
 
 # Build / dist
 *.egg-info/
+*.egg
 dist/
 build/
 
@@ -32,6 +32,10 @@ progress.json
 audit_results.json
 audit_results.csv
 audit_results.txt
+audit_results.html
+*.enc
+.idea/
+.vscode/
 audit.log
 docker-output/
 output/

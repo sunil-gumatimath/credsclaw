@@ -210,4 +210,13 @@ def parse_args(argv: Optional[List[str]] = None, config: Optional[dict] = None) 
         if args.mode not in ("code", "commits"):
             parser.error("argument --recent-repos-days: only allowed with modes 'code' or 'commits'")
 
+    if args.encryption_key:
+        import warnings
+        warnings.warn(
+            "--encryption-key is deprecated and will be removed in a future release. "
+            "Use the OUTPUT_ENCRYPTION_KEY environment variable instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
     return args

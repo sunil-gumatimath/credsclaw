@@ -43,3 +43,18 @@ def test_severity_levels():
     assert get_severity_level(70.0) == "HIGH"
     assert get_severity_level(50.0) == "MEDIUM"
     assert get_severity_level(30.0) == "LOW"
+
+def test_shannon_entropy_empty_string():
+    from auditor.scoring import shannon_entropy
+    assert shannon_entropy("") == 0.0
+
+def test_mask_key_short():
+    assert mask_key("shortkey12") == "***"
+
+def test_severity_boundary_values():
+    assert get_severity_level(80.0) == "CRITICAL"
+    assert get_severity_level(60.0) == "HIGH"
+    assert get_severity_level(40.0) == "MEDIUM"
+
+def test_confidence_score_zero_inputs():
+    assert calculate_confidence_score("", "", False) == 21.0

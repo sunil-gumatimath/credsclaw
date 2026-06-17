@@ -109,3 +109,26 @@ def test_parse_args_recent_repos_days_validation():
     args = parse_args(["--recent-repos-days", "7", "--mode", "code"])
     assert args.recent_repos_days == 7
     assert args.mode == "code"
+
+
+def test_parse_csv_arg_empty():
+    from auditor.cli import parse_csv_arg
+    assert parse_csv_arg("") == []
+
+def test_parse_csv_arg_single():
+    from auditor.cli import parse_csv_arg
+    assert parse_csv_arg("openai") == ["openai"]
+
+def test_parse_csv_arg_multiple():
+    from auditor.cli import parse_csv_arg
+    assert parse_csv_arg("openai, anthropic, aws") == ["openai", "anthropic", "aws"]
+
+def test_no_ssl_verify_flag_parsed():
+    parser = build_arg_parser()
+    args = parser.parse_args(["--no-ssl-verify"])
+    assert args.no_ssl_verify is True
+
+def test_encryption_key_deprecation_warning():
+    import pytest
+    with pytest.warns(DeprecationWarning, match="--encryption-key is deprecated"):
+        parse_args(["--encryption-key", "some-key"])

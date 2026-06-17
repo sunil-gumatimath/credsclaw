@@ -103,7 +103,7 @@ pip install -e .
 - `tqdm` — progress bars during scanning
 - `python-dotenv` — `.env` file loading
 - `pyyaml` — YAML config parsing
-- `cryptography` — optional, for encrypted output
+- `cryptography` — required for encrypted output
 
 ---
 
@@ -148,10 +148,17 @@ python -m auditor --repo owner/repo --providers all --validate
 | `--max-concurrency` | `10` | Parallel file processors |
 | `--store-raw-keys` | off | Store raw keys in output (unsafe, use encryption) |
 | `--encrypt-output` | off | Encrypt results with Fernet |
+| `--encryption-key` | `""` | ⚠️ Deprecated — use `OUTPUT_ENCRYPTION_KEY` env var instead |
 | `--no-ssl-verify` | off | Disable SSL certificate verification (for corporate proxies) |
 | `--config` | `auditor.yaml` | YAML configuration file path |
 | `--recent-repos-days` | (empty) | Discover repos pushed to in last N days (mode: `code`/`commits` only, not compatible with `--repo`/`--dir`) |
 | `--resume` | off | Continue from previous checkpoint |
+| `--checkpoint-file` | `output/progress.json` | Path to checkpoint file |
+| `--since-checkpoint` | off | Only process items newer than checkpoint timestamp |
+| `--checkpoint-interval` | `25` | Save checkpoint every N processed items |
+| `--timeout` | `10` | Validation request timeout in seconds |
+| `--allow-patterns` | (empty) | Comma-separated regex allow patterns |
+| `--deny-patterns` | (empty) | Comma-separated regex deny patterns |
 | `--generate-pre-commit-hook` | off | Write `.pre-commit-config.yaml` and exit |
 | `--help` | | Show full argument reference |
 
@@ -165,8 +172,7 @@ python -m auditor --repo owner/repo --providers all --validate
 | `--language` | Programming language filter |
 | `--updated-after` | Only repos updated after date (YYYY-MM-DD) |
 | `--extensions` | File extension filter (e.g., `py,js,env`) |
-| `--allow-patterns` | Comma-separated regex allow patterns |
-| `--deny-patterns` | Comma-separated regex deny patterns |
+| `--sort` | Sort mode for GitHub search (default: `indexed`) |
 
 ---
 
@@ -467,10 +473,10 @@ python -m pytest tests/ -q        # compact output
 
 | Language | Files | Code | Comment |
 |---|---|---|---|
-| Python | 18 | 1,728 | 193 |
+| Python | 19 | ~2,600 | ~200 |
 | TOML | 1 | 21 | 0 |
 | Markdown | 1 | 0 | 194 |
-| **Total** | **24** | **1,775** | **396** |
+| **Total** | **25** | **~2,621** | **~394** |
 
 ### Project Layout Principles
 

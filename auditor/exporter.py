@@ -1,6 +1,7 @@
 """Export results in JSON, CSV, TXT, or HTML format, plus summary printing."""
 
 import csv
+import html as _html
 import io
 import json
 import logging
@@ -17,7 +18,7 @@ def maybe_encrypt_bytes(data: bytes, encryption_key: str) -> bytes:
     """Encrypt data using Fernet symmetric encryption."""
     try:
         from cryptography.fernet import Fernet
-    except Exception as exc:
+    except ImportError as exc:
         raise RuntimeError(
             "cryptography package is required for encrypted output"
         ) from exc
@@ -96,6 +97,7 @@ def export_html_results(
         return
 
     keys_json = json.dumps(progress.found_keys, indent=2)
+    keys_json = keys_json.replace('</', '<\\/')
     total = len(progress.found_keys)
 
     sev_counts: Dict[str, int] = {
@@ -153,7 +155,7 @@ def export_html_results(
 </head>
 <body>
 <h1>\U0001f6e1\ufe0f CredsClaw Report</h1>
-<p class="subtitle">{total} finding(s) \\u2022 Avg confidence {avg_conf}/100 \\u2022 Generated {safe_utc_now()[:10]}</p>
+<p class="subtitle">{_html.escape(str(total))} finding(s) \\u2022 Avg confidence {_html.escape(str(avg_conf))}/100 \\u2022 Generated {_html.escape(safe_utc_now()[:10])}</p>
 
 <div class="stats">
   <div class="stat-card"><div class="num">{total}</div><div class="label">Total Findings</div></div>

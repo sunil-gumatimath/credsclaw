@@ -83,7 +83,6 @@ class APIAuditor:
             logger.warning("SSL certificate verification is disabled")
         connector = aiohttp.TCPConnector(**connector_kwargs)
         self.session = aiohttp.ClientSession(
-            headers={"Authorization": f"token {self.token}"},
             connector=connector,
         )
         return self
@@ -339,8 +338,9 @@ class APIAuditor:
         tasks = [validator(raw_key, self.args.timeout) for _, raw_key in keys_data]
         results = await asyncio.gather(*tasks)
         for (key_data, _), valid in zip(keys_data, results):
-            key_data["valid"] = valid
-            self._record_validation(provider, valid)
+            async with self.lock:
+                key_data["valid"] = valid
+                self._record_validation(provider, valid)
 
     # ------------------------------------------------------------------
     # Repo / date filtering
@@ -724,17 +724,24 @@ class APIAuditor:
 
         # Gather all commits via ``git log``
         try:
-            result = subprocess.run(
-                ["git", "log", "--all", "--format=%H||%an||%ae||%aI||%s", "--reverse"],
-                capture_output=True,
-                text=True,
+            process = await asyncio.create_subprocess_exec(
+                "git", "log", "--all", "--format=%H%x00%an%x00%ae%x00%aI%x00%s", "--reverse",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
                 cwd=str(dir_path),
-                timeout=120,
             )
-            if result.returncode != 0:
-                logger.error("git log failed: %s", result.stderr.strip())
+            try:
+                stdout_bytes, stderr_bytes = await asyncio.wait_for(process.communicate(), timeout=120)
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.communicate()
+                logger.error("git log timed out (large repository?)")
                 return
-            raw_log = result.stdout.strip()
+
+            if process.returncode != 0:
+                logger.error("git log failed: %s", stderr_bytes.decode("utf-8").strip())
+                return
+            raw_log = stdout_bytes.decode("utf-8").strip()
         except FileNotFoundError:
             logger.error("git executable not found on PATH")
             return
@@ -748,7 +755,7 @@ class APIAuditor:
 
         commits: List[Dict[str, str]] = []
         for line in raw_log.split("\n"):
-            parts = line.split("||", 4)
+            parts = line.split("\x00", 4)
             if len(parts) == 5:
                 commits.append({
                     "sha": parts[0],
@@ -770,14 +777,19 @@ class APIAuditor:
 
             async with self.semaphore:
                 try:
-                    diff_result = subprocess.run(
-                        ["git", "show", sha, "--format="],
-                        capture_output=True,
-                        text=True,
+                    process = await asyncio.create_subprocess_exec(
+                        "git", "show", sha, "--format=",
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
                         cwd=str(dir_path),
-                        timeout=30,
                     )
-                    diff_text = diff_result.stdout
+                    try:
+                        stdout_bytes, _ = await asyncio.wait_for(process.communicate(), timeout=30)
+                    except asyncio.TimeoutError:
+                        process.kill()
+                        await process.communicate()
+                        raise subprocess.TimeoutExpired(["git", "show"], 30)
+                    diff_text = stdout_bytes.decode("utf-8", errors="replace")
                 except (subprocess.TimeoutExpired, FileNotFoundError):
                     async with self.lock:
                         self.progress.mark_processed(identifier)
