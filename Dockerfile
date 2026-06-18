@@ -8,8 +8,7 @@ WORKDIR /opt/auditor
 
 # Install dependencies first (layer caching)
 COPY requirements.txt pyproject.toml README.md ./
-RUN python -m pip install --upgrade pip \
-    && python -m pip install -r requirements.txt
+RUN python -m pip install -r requirements.txt
 
 # Copy the package and install it so `python -m auditor` works from any directory
 COPY auditor/ ./auditor/

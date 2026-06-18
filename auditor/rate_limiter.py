@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 # GitHub search API: 30 req/min for authenticated, 10 for unauthenticated.
 # Start conservative; ratchet up from actual response headers.
-_SEARCH_QUOTA = 25
+SEARCH_QUOTA = 25
 
 
 class RateLimiter:
@@ -24,7 +24,7 @@ class RateLimiter:
     def __init__(self, max_retries: int = 5):
         self.max_retries = max_retries
         self._lock = asyncio.Lock()
-        self._remaining = _SEARCH_QUOTA
+        self._remaining = SEARCH_QUOTA
         self._reset_time: float = 0.0
 
     # ------------------------------------------------------------------

@@ -8,7 +8,7 @@ import re
 import subprocess
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import ssl
 
@@ -20,7 +20,7 @@ except ImportError:
     tqdm = None
 
 from auditor.patterns import NOISE_SUBSTRINGS
-from auditor.rate_limiter import _SEARCH_QUOTA
+from auditor.rate_limiter import SEARCH_QUOTA
 from auditor.scoring import (
     calculate_confidence_score,
     get_severity_level,
@@ -30,7 +30,7 @@ from auditor.scoring import (
 from auditor.utils import parse_iso8601, safe_utc_now
 from auditor.rate_limiter import RateLimiter
 from auditor.tracker import ProgressTracker
-from auditor.validator import VALIDATION_MAP
+from auditor.validator import create_validator_session, VALIDATION_MAP
 from auditor.cli import parse_csv_arg
 
 logger = logging.getLogger(__name__)
@@ -69,6 +69,12 @@ class APIAuditor:
         self.since_dt = None
         if args.since_checkpoint and progress.checkpoint_timestamp:
             self.since_dt = parse_iso8601(progress.checkpoint_timestamp)
+            if self.since_dt is None:
+                logger.warning(
+                    "Could not parse checkpoint timestamp '%s'; "
+                    "will process all items (no incremental filtering)",
+                    progress.checkpoint_timestamp,
+                )
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -124,7 +130,7 @@ class APIAuditor:
             ) as resp:
                 data = await resp.json()
             search = data.get("resources", {}).get("search", {})
-            remaining = search.get("remaining", _SEARCH_QUOTA)
+            remaining = search.get("remaining", SEARCH_QUOTA)
             reset_at = search.get("reset", 0)
             await self.rate_limiter.update_from_headers({
                 "X-RateLimit-Remaining": str(remaining),
@@ -335,12 +341,19 @@ class APIAuditor:
         validator = VALIDATION_MAP.get(provider)
         if not validator:
             return
-        tasks = [validator(raw_key, self.args.timeout) for _, raw_key in keys_data]
-        results = await asyncio.gather(*tasks)
-        for (key_data, _), valid in zip(keys_data, results):
-            async with self.lock:
-                key_data["valid"] = valid
-                self._record_validation(provider, valid)
+        no_ssl_verify = getattr(self.args, "no_ssl_verify", False)
+        timeout = getattr(self.args, "timeout", 10)
+        # Reuse a single session for all validations in this batch
+        async with create_validator_session(no_ssl_verify, timeout) as session:
+            tasks = [
+                validator(raw_key, timeout, no_ssl_verify, session)
+                for _, raw_key in keys_data
+            ]
+            results = await asyncio.gather(*tasks)
+            for (key_data, _), valid in zip(keys_data, results):
+                async with self.lock:
+                    key_data["valid"] = valid
+                    self._record_validation(provider, valid)
 
     # ------------------------------------------------------------------
     # Repo / date filtering
@@ -348,6 +361,7 @@ class APIAuditor:
     def _is_recent_enough(
         self, repo_updated_at: str = "", commit_date: str = ""
     ) -> bool:
+        """Return True if the item is newer than the checkpoint timestamp."""
         if not self.since_dt:
             return True
         check_dt = parse_iso8601(commit_date) or parse_iso8601(repo_updated_at)
@@ -356,12 +370,13 @@ class APIAuditor:
         return check_dt > self.since_dt
 
     def filter_repo(self, item: Dict[str, Any]) -> bool:
+        """Return True if the repository item passes all user-specified filters."""
         repo = item.get("repository", {})
 
         if self.args.min_stars and repo.get("stargazers_count", 0) < self.args.min_stars:
             return False
         if self.args.language:
-            repo_lang = str(repo.get("language", "")).lower()
+            repo_lang = (repo.get("language") or "").lower()
             if repo_lang != self.args.language.lower():
                 return False
         if self.args.updated_after:
@@ -372,6 +387,53 @@ class APIAuditor:
         return True
 
     # ------------------------------------------------------------------
+    # Shared item-processing loop
+    # ------------------------------------------------------------------
+    async def _run_item_loop(
+        self,
+        items: List[Any],
+        provider: str,
+        pattern: str,
+        process_func: "Callable[[Any, List[Tuple[Dict[str, Any], str]]], Any]",
+        description: str,
+    ) -> None:
+        """Run a generic item processing loop with concurrency, progress,
+        checkpoint, and optional validation.
+
+        ``process_func`` is an async callable ``(item, keys_to_validate) -> None``
+        that extracts candidates from *item* and appends to ``keys_to_validate``.
+        """
+        if self.args.dry_run:
+            logger.info("[Dry run] %s items for %s", len(items), provider)
+            return
+
+        keys_to_validate: List[Tuple[Dict[str, Any], str]] = []
+
+        async def _wrapped(item: Any) -> None:
+            return await process_func(item, keys_to_validate)
+
+        tasks = [asyncio.create_task(_wrapped(item)) for item in items]
+        iterator = asyncio.as_completed(tasks)
+        if tqdm:
+            iterator = tqdm(iterator, total=len(tasks), desc=description)
+        for coro in iterator:
+            await coro
+
+        if self.args.validate and keys_to_validate:
+            logger.info(
+                "Validating %s %s keys...", len(keys_to_validate), provider
+            )
+            await self.batch_validate_keys(keys_to_validate, provider)
+
+        self.progress.save_progress()
+        logger.info(
+            "Completed %s: %s keys found (session), %s total unique keys overall",
+            description,
+            self._provider_found_count.get(provider, 0),
+            len(self.progress.found_keys),
+        )
+
+    # ------------------------------------------------------------------
     # Scan modes
     # ------------------------------------------------------------------
     async def audit_api_keys(
@@ -379,6 +441,10 @@ class APIAuditor:
     ) -> None:
         """GitHub code search mode."""
         logger.info("Auditing %s API keys...", provider)
+
+        # Sync rate-limit bucket with GitHub's actual remaining quota
+        await self._fetch_initial_rate_limit()
+
         all_items: List[Dict[str, Any]] = []
 
         page = 1
@@ -403,13 +469,10 @@ class APIAuditor:
                 logger.info("Reached max pages limit: %s", self.args.max_pages)
                 break
 
-        if self.args.dry_run:
-            logger.info("[Dry run] %s code hits for %s", len(all_items), provider)
-            return
-
-        keys_to_validate: List[Tuple[Dict[str, Any], str]] = []
-
-        async def process_item(item: Dict[str, Any]) -> None:
+        async def process_item(
+            item: Dict[str, Any],
+            keys_to_validate: List[Tuple[Dict[str, Any], str]],
+        ) -> None:
             repo = item["repository"]["full_name"]
             path = item["path"]
             identifier = f"{repo}/{path}"
@@ -459,23 +522,9 @@ class APIAuditor:
                 if len(self.progress.processed) % self.args.checkpoint_interval == 0:
                     self.progress.save_progress()
 
-        tasks = [asyncio.create_task(process_item(item)) for item in all_items]
-        iterator = asyncio.as_completed(tasks)
-        if tqdm:
-            iterator = tqdm(iterator, total=len(tasks), desc=f"Auditing {provider}")
-        for coro in iterator:
-            await coro
-
-        if self.args.validate and keys_to_validate:
-            logger.info(
-                "Validating %s %s keys...", len(keys_to_validate), provider
-            )
-            await self.batch_validate_keys(keys_to_validate, provider)
-
-        self.progress.save_progress()
-        logger.info(
-            "Completed %s audit: %s keys found (session), %s total unique keys overall",
-            provider, self._provider_found_count.get(provider, 0), len(self.progress.found_keys),
+        await self._run_item_loop(
+            all_items, provider, pattern, process_item,
+            description=f"Auditing {provider}",
         )
 
     async def audit_commit_messages(
@@ -483,6 +532,10 @@ class APIAuditor:
     ) -> None:
         """GitHub commit-message search mode."""
         logger.info("Auditing %s API keys in commit messages...", provider)
+
+        # Sync rate-limit bucket with GitHub's actual remaining quota
+        await self._fetch_initial_rate_limit()
+
         all_items: List[Dict[str, Any]] = []
 
         page = 1
@@ -507,13 +560,10 @@ class APIAuditor:
                 logger.info("Reached max pages limit: %s", self.args.max_pages)
                 break
 
-        if self.args.dry_run:
-            logger.info("[Dry run] %s commit hits for %s", len(all_items), provider)
-            return
-
-        keys_to_validate: List[Tuple[Dict[str, Any], str]] = []
-
-        async def process_commit(item: Dict[str, Any]) -> None:
+        async def process_commit(
+            item: Dict[str, Any],
+            keys_to_validate: List[Tuple[Dict[str, Any], str]],
+        ) -> None:
             repo = item["repository"]["full_name"]
             commit_sha = item["sha"]
             commit_msg = item.get("commit", {}).get("message", "")
@@ -567,25 +617,9 @@ class APIAuditor:
                 if len(self.progress.processed) % self.args.checkpoint_interval == 0:
                     self.progress.save_progress()
 
-        tasks = [asyncio.create_task(process_commit(item)) for item in all_items]
-        iterator = asyncio.as_completed(tasks)
-        if tqdm:
-            iterator = tqdm(
-                iterator, total=len(tasks), desc=f"Auditing {provider} commits"
-            )
-        for coro in iterator:
-            await coro
-
-        if self.args.validate and keys_to_validate:
-            logger.info(
-                "Validating %s %s keys...", len(keys_to_validate), provider
-            )
-            await self.batch_validate_keys(keys_to_validate, provider)
-
-        self.progress.save_progress()
-        logger.info(
-            "Completed %s commits audit: %s keys found (session), %s total unique keys overall",
-            provider, self._provider_found_count.get(provider, 0), len(self.progress.found_keys),
+        await self._run_item_loop(
+            all_items, provider, pattern, process_commit,
+            description=f"Auditing {provider} commits",
         )
 
     async def audit_local_directory(
@@ -630,16 +664,10 @@ class APIAuditor:
                 continue
             all_files.append(file_path)
 
-        if self.args.dry_run:
-            logger.info(
-                "[Dry run] %s files found for %s in %s",
-                len(all_files), provider, directory,
-            )
-            return
-
-        keys_to_validate: List[Tuple[Dict[str, Any], str]] = []
-
-        async def process_file(file_path: Path) -> None:
+        async def process_file(
+            file_path: Path,
+            keys_to_validate: List[Tuple[Dict[str, Any], str]],
+        ) -> None:
             identifier = f"{provider}/{file_path}"
 
             async with self.lock:
@@ -682,25 +710,9 @@ class APIAuditor:
                 if len(self.progress.processed) % self.args.checkpoint_interval == 0:
                     self.progress.save_progress()
 
-        tasks = [asyncio.create_task(process_file(fp)) for fp in all_files]
-        iterator = asyncio.as_completed(tasks)
-        if tqdm:
-            iterator = tqdm(
-                iterator, total=len(tasks), desc=f"Scanning {provider} (local)"
-            )
-        for coro in iterator:
-            await coro
-
-        if self.args.validate and keys_to_validate:
-            logger.info(
-                "Validating %s %s keys...", len(keys_to_validate), provider
-            )
-            await self.batch_validate_keys(keys_to_validate, provider)
-
-        self.progress.save_progress()
-        logger.info(
-            "Completed %s local audit: %s keys found (session), %s total unique keys overall",
-            provider, self._provider_found_count.get(provider, 0), len(self.progress.found_keys),
+        await self._run_item_loop(
+            all_files, provider, pattern, process_file,
+            description=f"Scanning {provider} (local)",
         )
 
     async def audit_git_history(
@@ -714,12 +726,6 @@ class APIAuditor:
         git_dir = dir_path / ".git"
         if not git_dir.is_dir():
             logger.error("Not a git repository: %s", directory)
-            return
-
-        if self.args.dry_run:
-            logger.info(
-                "[Dry run] git history scan for %s in %s", provider, directory
-            )
             return
 
         # Gather all commits via ``git log``
@@ -765,9 +771,10 @@ class APIAuditor:
                     "subject": parts[4],
                 })
 
-        keys_to_validate: List[Tuple[Dict[str, Any], str]] = []
-
-        async def process_commit(commit: Dict[str, str]) -> None:
+        async def process_commit(
+            commit: Dict[str, str],
+            keys_to_validate: List[Tuple[Dict[str, Any], str]],
+        ) -> None:
             sha = commit["sha"]
             identifier = f"{provider}/git-history/{sha}"
 
@@ -827,23 +834,7 @@ class APIAuditor:
                 if len(self.progress.processed) % self.args.checkpoint_interval == 0:
                     self.progress.save_progress()
 
-        tasks = [asyncio.create_task(process_commit(c)) for c in commits]
-        iterator = asyncio.as_completed(tasks)
-        if tqdm:
-            iterator = tqdm(
-                iterator, total=len(tasks), desc=f"Git history {provider}"
-            )
-        for coro in iterator:
-            await coro
-
-        if self.args.validate and keys_to_validate:
-            logger.info(
-                "Validating %s %s keys...", len(keys_to_validate), provider
-            )
-            await self.batch_validate_keys(keys_to_validate, provider)
-
-        self.progress.save_progress()
-        logger.info(
-            "Completed %s git-history audit: %s keys found (session), %s total unique keys overall",
-            provider, self._provider_found_count.get(provider, 0), len(self.progress.found_keys),
+        await self._run_item_loop(
+            commits, provider, pattern, process_commit,
+            description=f"Git history {provider}",
         )

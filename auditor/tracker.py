@@ -38,19 +38,13 @@ class ProgressTracker:
             self.found_keys = data.get("found_keys", [])
             self.checkpoint_timestamp = data.get("timestamp")
 
-            # New format.
+            # Populate seen_hashes from seen_keys (new format) or found_keys (legacy).
             for item in data.get("seen_keys", []):
                 key_hash = item.get("key_hash")
                 if key_hash:
                     self.seen_hashes.add(key_hash)
 
-            # Backward compatibility with previous raw-key checkpoints.
-            if not self.seen_hashes and data.get("seen_keys"):
-                for old_item in data["seen_keys"]:
-                    raw = old_item.get("key") if isinstance(old_item, dict) else str(old_item)
-                    self.seen_hashes.add(fingerprint_key(raw))
-
-            # Backfill hashes from found_keys if needed.
+            # Backfill hashes from found_keys for backward compat with older checkpoints.
             for item in self.found_keys:
                 if item.get("key_hash"):
                     self.seen_hashes.add(item["key_hash"])

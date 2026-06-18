@@ -22,6 +22,7 @@ CONFIG_ARG_MAP: Dict[str, str] = {
     "max_concurrency": "max_concurrency",
     "confidence_threshold": "confidence_threshold",
     "checkpoint_interval": "checkpoint_interval",
+    "checkpoint_file": "checkpoint_file",
     "max_pages": "max_pages",
     "min_stars": "min_stars",
     "language": "language",
@@ -31,6 +32,12 @@ CONFIG_ARG_MAP: Dict[str, str] = {
     "store_raw_keys": "store_raw_keys",
     "encrypt_output": "encrypt_output",
     "timeout": "timeout",
+    "recent_repos_days": "recent_repos_days",
+    "sort": "sort",
+    "dry_run": "dry_run",
+    "resume": "resume",
+    "since_checkpoint": "since_checkpoint",
+    "no_ssl_verify": "no_ssl_verify",
 }
 
 PLURAL_LIST_KEYS: frozenset = frozenset({

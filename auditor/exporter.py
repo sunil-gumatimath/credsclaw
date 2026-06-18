@@ -96,8 +96,10 @@ def export_html_results(
         logger.info("No keys found to export as HTML")
         return
 
-    keys_json = json.dumps(progress.found_keys, indent=2)
-    keys_json = keys_json.replace('</', '<\\/')
+    # Serialise to JSON for embedding in <script>.
+    # Escape </ to <\/ to prevent </script> injection in the HTML page.
+    keys_json = json.dumps(progress.found_keys, indent=2, ensure_ascii=False)
+    keys_json = keys_json.replace("</", r"<\/")
     total = len(progress.found_keys)
 
     sev_counts: Dict[str, int] = {
