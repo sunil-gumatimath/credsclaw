@@ -75,10 +75,10 @@ def test_parse_args_output_file_default():
 
 def test_parse_args_with_config():
     """parse_args should accept config dict and apply defaults."""
-    config = {"mode": "local", "providers": "stripe"}
+    config = {"mode": "local", "providers": "slack"}
     args = parse_args([], config=config)
     assert args.mode == "local"
-    assert args.providers == "stripe"
+    assert args.providers == "slack"
 
 
 def test_parse_args_cli_overrides_config():

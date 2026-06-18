@@ -17,7 +17,7 @@ def _make_progress_with_keys(store_raw_keys=False):
     for i, (provider, sev, conf) in enumerate([
         ("OpenAI", "CRITICAL", 92.5),
         ("GitHub", "HIGH", 74.0),
-        ("Stripe", "MEDIUM", 55.3),
+        ("Cloudflare", "MEDIUM", 55.3),
     ]):
         key = f"sk-test-key-{i}-" + "a" * 30
         key_hash = fingerprint_key(key)
@@ -65,7 +65,7 @@ def test_export_html_results_contains_key_data(tmp_path):
     assert "CRITICAL" in content
     assert "92.5" in content
     assert "GitHub" in content
-    assert "Stripe" in content
+    assert "Cloudflare" in content
 
 
 def test_export_html_results_contains_severity_bars(tmp_path):

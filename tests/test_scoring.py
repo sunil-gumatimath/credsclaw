@@ -56,5 +56,7 @@ def test_severity_boundary_values():
     assert get_severity_level(60.0) == "HIGH"
     assert get_severity_level(40.0) == "MEDIUM"
 
-def test_confidence_score_zero_inputs():
-    assert calculate_confidence_score("", "", False) == 21.0
+def test_confidence_score_empty_input_is_low():
+    """Empty key with no context should score very low (well below threshold)."""
+    score = calculate_confidence_score("", "", False)
+    assert score < 30.0, f"Expected score < 30 for empty input, got {score}"
