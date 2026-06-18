@@ -1,9 +1,9 @@
 # 🔍 CredsClaw
 
-> **Async Python CLI** that scans GitHub repositories, local directories, and git history for leaked API keys and secrets across **13 providers**. Features intelligent confidence scoring, deduplication, checkpoint/resume, and rich HTML reports.
+> **Async Python CLI** that scans GitHub repositories, local directories, and git history for leaked API keys and secrets across **14 providers**. Features intelligent confidence scoring, deduplication, checkpoint/resume, and rich HTML reports.
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](# )
-[![Tests](https://img.shields.io/badge/tests-50%20passing-brightgreen)](# )
+[![Tests](https://img.shields.io/badge/tests-71%20passing-brightgreen)](# )
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow)](# )
 
 ---
@@ -34,7 +34,7 @@
 |---|---|
 | **4 scan modes** | GitHub code search, commit messages, local directory, git history |
 | **Recent-repo discovery** | Auto-discover repos pushed to in last N days and scan them |
-| **13 provider patterns** | OpenAI, Anthropic, Google, AWS, Stripe, GitHub, Slack, Twilio, SendGrid, HuggingFace, Cloudflare, Supabase, Azure |
+| **14 provider patterns** | OpenAI, Anthropic, Google, AWS, GitHub, Slack, HuggingFace, Cloudflare, Azure, Replicate, Groq, OpenRouter, Together AI, Mistral AI |
 | **Confidence scoring** | Multi-factor analysis: Shannon entropy, context keywords, length, character diversity, noise penalties |
 | **Severity tiers** | CRITICAL (80+), HIGH (60-79), MEDIUM (40-59), LOW (<40) |
 | **Live validation** | Ping provider APIs to confirm whether discovered keys are still active |
@@ -46,6 +46,7 @@
 | **YAML config** | Persistent configuration with CLI override precedence |
 | **Dry-run mode** | Estimate scope without fetching file contents |
 | **Allow / deny patterns** | Regex-based filtering to include or exclude matches |
+| **Shared validation sessions** | Reuses a single `aiohttp.ClientSession` per batch for efficient live validation |
 
 ---
 
@@ -119,8 +120,8 @@ python -m auditor [options]
 # Scan a specific GitHub repository for OpenAI and AWS keys
 python -m auditor --repo owner/repo --providers openai,aws
 
-# Scan the current directory for all 13 provider patterns
-python -m auditor --mode local --dir . --providers openai,anthropic,google,aws,stripe,github,slack,twilio,sendgrid,huggingface,cloudflare,supabase,azure
+# Scan the current directory for all 14 provider patterns
+python -m auditor --mode local --dir . --providers all
 
 # Check your own git history for accidentally committed secrets
 python -m auditor --mode git-history --dir . --providers github --confidence-threshold 60
@@ -148,10 +149,10 @@ python -m auditor --repo owner/repo --providers all --validate
 | `--max-concurrency` | `10` | Parallel file processors |
 | `--store-raw-keys` | off | Store raw keys in output (unsafe, use encryption) |
 | `--encrypt-output` | off | Encrypt results with Fernet |
-| `--encryption-key` | `""` | ⚠️ Deprecated — use `OUTPUT_ENCRYPTION_KEY` env var instead |
+| `--encryption-key` | (unset) | ⚠️ Deprecated — use `OUTPUT_ENCRYPTION_KEY` env var instead |
 | `--no-ssl-verify` | off | Disable SSL certificate verification (for corporate proxies) |
 | `--config` | `auditor.yaml` | YAML configuration file path |
-| `--recent-repos-days` | (empty) | Discover repos pushed to in last N days (mode: `code`/`commits` only, not compatible with `--repo`/`--dir`) |
+| `--recent-repos-days` | (empty) | Discover repos pushed to in last N days (mode: `code`/`commits` only) |
 | `--resume` | off | Continue from previous checkpoint |
 | `--checkpoint-file` | `output/progress.json` | Path to checkpoint file |
 | `--since-checkpoint` | off | Only process items newer than checkpoint timestamp |
@@ -183,14 +184,16 @@ python -m auditor --repo owner/repo --providers all --validate
 Searches GitHub's code index for exposed keys. Requires a `GITHUB_TOKEN` (set in `.env` or pass on prompt).
 
 ```bash
-python -m auditor --repo django/django --providers openai,stripe
+python -m auditor --repo django/django --providers openai,aws
 ```
 
-Use `--recent-repos-days` to auto-discover and scan public repos pushed to recently:
+Use `--recent-repos-days` to auto-discover public repos pushed to recently:
 
 ```bash
 python -m auditor --recent-repos-days 7 --providers all --mode code
 ```
+
+> **Note:** `--recent-repos-days` discovers repos by push date, then searches those repos for key patterns. For best results, use `--language` to filter (e.g., `--language python`) and increase `--max-pages`.
 
 ### `commits` — GitHub Commit Message Search
 
@@ -213,28 +216,29 @@ python -m auditor --mode local --dir . --providers aws,github --output-format ht
 Runs `git log --all` and inspects every commit's diff content for exposed keys. Useful for finding keys that were committed and later removed.
 
 ```bash
-python -m auditor --mode git-history --dir ./my-repo --providers slack,twilio
+python -m auditor --mode git-history --dir ./my-repo --providers github,slack
 ```
 
 ---
 
 ## Supported Providers
 
-| Provider | Pattern Prefix | Live Validation |
+| Provider | Pattern Prefix(es) | Live Validation |
 |---|---|---|
-| **OpenAI** | `sk-` | ✓ |
-| **Anthropic** | `sk-ant-` | ✓ |
-| **Google AI** | `AIza`, `AQ.` | — |
-| **AWS** | `AKIA`, `ASIA`, `ABIA`, `ACCA` | — |
-| **Stripe** | `sk_`, `pk_`, `rk_`, `whsec_` | ✓ |
+| **Anthropic** | `sk-ant-apiXX-`, `sk-ant-oatXX-`, `sk-ant-admin-` | ✓ |
+| **OpenAI** | `sk-` (classic), `sk-proj-`, `sk-svcacct-`, `sk-admin-` (with `T3BlbkFJ` marker) | ✓ |
+| **Google AI** | `AIza...`, `AQ....`, `ya29....` | — |
+| **AWS** | 11 prefixes: `AKIA`, `ASIA`, `ABIA`, `ACCA`, `APKA`, `AIDA`, `AROA`, `AIPA`, `ANPA`, `AGPA`, `ASCA` | — |
 | **GitHub** | `ghp_`, `gho_`, `ghs_`, `ghr_`, `ghu_`, `github_pat_` | ✓ |
-| **Slack** | `xoxb-`, `xapp-`, `xwfp-`, `hooks.slack.com` | ✓ |
-| **Twilio** | `SK`, `AC` | — |
-| **SendGrid** | `SG.` | ✓ |
+| **Slack** | `xoxb-`, `xoxp-`, `xoxa-`, `xoxs-`, `xoxo-`, `xoxr-`, `xoxe-`, `xapp-`, `xwfp-`, `hooks.slack.com` | ✓ |
 | **HuggingFace** | `hf_` | ✓ |
-| **Cloudflare** | `cfk_`, `cfut_`, `cfat_` | ✓ |
-| **Supabase** | `sbp_`, `sb_publishable_`, `sb_secret_` | ✓ |
-| **Azure** | `Endpoint=sb://` | — |
+| **Cloudflare** | `cfk_`, `cfut_`, `cfat_`, `cft_` | ✓ |
+| **Azure** | Connection strings (`Endpoint=sb://` or `DefaultEndpointsProtocol`) | — |
+| **Replicate** | `r8_` | ✓ |
+| **Groq** | `gsk_` | ✓ |
+| **OpenRouter** | `sk-or-` | ✓ |
+| **Together AI** | `together_` | ✓ |
+| **Mistral AI** | `mist_` | ✓ |
 
 Live validatable providers ping their respective APIs to confirm whether the discovered key is still active.
 
@@ -281,9 +285,10 @@ confidence_threshold: 60.0
 max_concurrency: 5
 validate: false
 encrypt_output: false
+recent_repos_days: 7
 ```
 
-CLI flags always take precedence over config file values.
+All config keys map to their CLI equivalents. CLI flags always take precedence over config file values.
 
 ### Environment Variables
 
@@ -392,10 +397,10 @@ repos:
 auditor/                        # Installable Python package
 ├── __init__.py                 # Package init, logging setup, re-exports
 ├── __main__.py                 # Entry point: argparse → dispatch → export
-├── patterns.py                 # 13 regex patterns, noise list, provider registry
+├── patterns.py                 # 14 regex patterns, noise list, provider registry
 ├── scoring.py                  # Shannon entropy, confidence scoring, severity, masking
 ├── scanner.py                  # APIAuditor class — all 4 scan modes
-├── validator.py                # Live API validation for 9 providers
+├── validator.py                # Live API validation for 11 providers
 ├── exporter.py                 # JSON/CSV/TXT/HTML export + summary printer
 ├── tracker.py                  # Checkpoint/resume state management
 ├── cli.py                      # Argparse builder, config merge, pre-commit hook
@@ -403,7 +408,7 @@ auditor/                        # Installable Python package
 ├── rate_limiter.py             # Token-bucket rate limiter (+ exponential backoff) to prevent concurrent-task quota exhaustion
 └── utils.py                    # ISO-8601 parsing, UTC timestamp helper
 
-tests/                          # Module-scoped test files
+tests/                          # Module-scoped test files (71 tests)
 ├── test_patterns.py            # Pattern matching tests
 ├── test_scoring.py             # Scoring, masking, fingerprinting tests
 ├── test_config.py              # Config loading and merging tests
@@ -438,16 +443,27 @@ flowchart TD
 
     L & M --> P["rate_limiter.acquire()"]
     P --> Q["GitHub API request"]
-    Q --> R["extract_candidates() ← regex"]
-    R --> S["batch_validate_keys() (optional)"]
-    S --> T["ProgressTracker.save_progress()"]
+    Q --> R["_run_item_loop() ← semaphore"]
+    R --> S["extract_candidates() ← regex"]
+    S --> T["batch_validate_keys() ← shared session"]
+    T --> U["ProgressTracker.save_progress()"]
 
     N --> R
     O --> R
 
-    T --> U["export_results() / export_html_results()"]
-    U --> V["output/audit_results.{json,csv,txt,html}"]
+    U --> V["export_results() / export_html_results()"]
+    V --> W["output/audit_results.{json,csv,txt,html}"]
 ```
+
+### Key Design Decisions
+
+| Decision | Rationale |
+|---|---|
+| **Shared validation sessions** | `batch_validate_keys()` creates one `aiohttp.ClientSession` per provider batch, eliminating TCP connection spam |
+| **`_run_item_loop` extracted** | Removes ~30 lines of duplicated loop/validation/save/log code from each scan method |
+| **Rate-limit sync on non-discovery scans** | `_fetch_initial_rate_limit()` called in `audit_api_keys()` and `audit_commit_messages()` ensures the token bucket starts at the correct level |
+| **`no_ssl_verify` forwarded** | SSL setting from CLI is passed to validators for corporate proxy environments |
+| **`filter_repo` handles `None`** | `repo.get("language") or ""` prevents `"None"` string from appearing in filters |
 
 ---
 
@@ -465,7 +481,7 @@ pip install pytest
 ### Running Tests
 
 ```bash
-python -m pytest tests/ -v        # 50 tests
+python -m pytest tests/ -v        # 71 tests
 python -m pytest tests/ -q        # compact output
 ```
 
@@ -473,10 +489,10 @@ python -m pytest tests/ -q        # compact output
 
 | Language | Files | Code | Comment |
 |---|---|---|---|
-| Python | 19 | ~2,600 | ~200 |
+| Python | 20 | ~2,800 | ~220 |
 | TOML | 1 | 21 | 0 |
-| Markdown | 1 | 0 | 194 |
-| **Total** | **25** | **~2,621** | **~394** |
+| Markdown | 1 | 0 | ~220 |
+| **Total** | **26** | **~2,821** | **~440** |
 
 ### Project Layout Principles
 
@@ -508,6 +524,14 @@ Yes. Your `GITHUB_TOKEN` needs `repo` scope for private repos. Ensure it has the
 **Q: What is the rate limit for GitHub API?**
 
 GitHub allows 10–30 requests per minute for search, depending on your token's level. The tool handles rate limiting with exponential backoff (up to 5 retries, max 300s wait). For large scans, use `--max-pages` to limit scope.
+
+**Q: Which providers were removed?**
+
+Stripe, Twilio, SendGrid, and Supabase were removed. If you need them back, see the git history for their patterns and validators.
+
+**Q: What are the new AI hosting providers?**
+
+Replicate (`r8_`), Groq (`gsk_`), OpenRouter (`sk-or-`), Together AI (`together_`), and Mistral AI (`mist_`) — all with live validation support.
 
 ---
 
