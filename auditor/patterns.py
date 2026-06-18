@@ -1,21 +1,17 @@
-"""Regex patterns for detecting API keys and secrets across 13 providers."""
+"""Regex patterns for detecting API keys and secrets across 14 providers."""
 
 # ---------------------------------------------------------------------------
 # Provider key patterns (updated June 2026)
 # ---------------------------------------------------------------------------
 ANTHROPIC_KEY_PATTERN = (
-    r"\bsk-ant-(?:api0[1-3]|oat01|admin)-[A-Za-z0-9_-]{40,}\b"
+    r"\bsk-ant-(?:api\d{2}|oat\d{2}|admin|auth\d{2})-[A-Za-z0-9_-]{40,}\b"
 )
 OPENAI_KEY_PATTERN = (
     r"\b(?:sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,100}T3BlbkFJ"
     r"[A-Za-z0-9_-]{20,100}|sk-[A-Za-z0-9]{48})\b"
 )
-GOOGLE_AI_KEY_PATTERN = r"\b(?:AIza[A-Za-z0-9_-]{35}|AQ\.[A-Za-z0-9_-]{35,})\b"
-AWS_ACCESS_KEY_PATTERN = r"\b(?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16,}\b"
-STRIPE_KEY_PATTERN = (
-    r"\b(?:pk_(?:live|test)_[0-9a-zA-Z]{24,}|sk_(?:live|test)_[0-9a-zA-Z]{24,}|"
-    r"rk_(?:live|test)_[0-9a-zA-Z]{24,}|whsec_[0-9a-zA-Z]{48,})\b"
-)
+GOOGLE_AI_KEY_PATTERN = r"\b(?:AIza[A-Za-z0-9_-]{35}|AQ\.[A-Za-z0-9_-]{35,}|ya29\.[A-Za-z0-9_-]{30,})\b"
+AWS_ACCESS_KEY_PATTERN = r"\b(?:AKIA|ASIA|ABIA|ACCA|APKA|AIDA|AROA|AIPA|ANPA|AGPA|ASCA)[0-9A-Z]{16}\b"
 GITHUB_TOKEN_PATTERN = (
     r"\b(?:ghp_[0-9a-zA-Z]{36,40}|gho_[0-9a-zA-Z]{36}|ghs_[0-9a-zA-Z]{36,200}|"
     r"ghr_[0-9a-zA-Z]{36}|ghu_[0-9a-zA-Z]{36}|"
@@ -26,19 +22,19 @@ SLACK_TOKEN_PATTERN = (
     r"xapp-[0-9a-zA-Z-]{24,}|xwfp-[0-9a-zA-Z-]{24,}|"
     r"hooks\.slack\.com/services/[A-Za-z0-9/]+?)\b"
 )
-TWILIO_API_KEY_PATTERN = r"\b(?:SK[0-9a-fA-F]{32}|AC[0-9a-fA-F]{32})\b"
-SENDGRID_API_KEY_PATTERN = r"\bSG\.[0-9a-zA-Z\.\-_]{22}\.[0-9a-zA-Z\.\-_]{43}\b"
 HUGGINGFACE_KEY_PATTERN = r"\bhf_[a-zA-Z0-9]{34}\b"
-CLOUDFLARE_TOKEN_PATTERN = r"\b(?:cfk_|cfut_|cfat_)[A-Za-z0-9]{40}[0-9a-f]{8}\b"
-SUPABASE_KEY_PATTERN = (
-    r"\b(?:sb_publishable_[A-Za-z0-9]{22}_[0-9a-f]{8}|"
-    r"sb_secret_[A-Za-z0-9]{22}_[0-9a-f]{8}|"
-    r"sbp_[a-zA-Z0-9]{36}|sb_secret_[a-zA-Z0-9]{36})\b"
-)
+CLOUDFLARE_TOKEN_PATTERN = r"\b(?:cfk_|cfut_|cfat_|cft_)[A-Za-z0-9]{30,50}[0-9a-f]{6,16}\b"
 AZURE_CONNECTION_STRING_PATTERN = (
-    r"Endpoint=sb://[^;]+;SharedAccessKeyName=[^;]+;"
-    r"SharedAccessKey=[A-Za-z0-9+/=]+"
+    r"(?:Endpoint=sb://[^;]+;SharedAccessKeyName=[^;]+;"
+    r"SharedAccessKey=[A-Za-z0-9+/=]+|"
+    r"DefaultEndpointsProtocol=https?;AccountName=[^;]+;"
+    r"AccountKey=[A-Za-z0-9+/=]{40,}={0,2})"
 )
+REPLICATE_API_TOKEN_PATTERN = r"\br8_[A-Za-z0-9]{32,}\b"
+GROQ_API_KEY_PATTERN = r"\bgsk_[A-Za-z0-9_-]{30,}\b"
+OPENROUTER_API_KEY_PATTERN = r"\bsk-or-[A-Za-z0-9_-]{40,}\b"
+TOGETHER_API_KEY_PATTERN = r"\btogether_[A-Za-z0-9]{30,}\b"
+MISTRAL_API_KEY_PATTERN = r"\bmist_[A-Za-z0-9]{30,}\b"
 
 # ---------------------------------------------------------------------------
 # Noise / placeholder detection
@@ -71,21 +67,23 @@ DEFAULT_CONFIDENCE_THRESHOLD = 50.0
 PROVIDER_CONFIGS = {
     "anthropic":   ("Anthropic",   "sk-ant-",                                          ANTHROPIC_KEY_PATTERN),
     "openai":      ("OpenAI",      "sk-",                                              OPENAI_KEY_PATTERN),
-    "google":      ("Google",      "AIza",                                             GOOGLE_AI_KEY_PATTERN),
+    "google":      ("Google",      "AIza OR ya29",                                     GOOGLE_AI_KEY_PATTERN),
     "aws":         ("AWS",         "AKIA",                                             AWS_ACCESS_KEY_PATTERN),
-    "stripe":      ("Stripe",      "sk_ OR rk_ OR whsec_",                             STRIPE_KEY_PATTERN),
     "github":      ("GitHub",      "ghp_ OR github_pat_ OR gho_ OR ghs_ OR ghr_ OR ghu_", GITHUB_TOKEN_PATTERN),
     "slack":       ("Slack",       "xoxb- OR xapp- OR xwfp- OR hooks.slack.com",       SLACK_TOKEN_PATTERN),
-    "twilio":      ("Twilio",      "SK OR AC",                                         TWILIO_API_KEY_PATTERN),
-    "sendgrid":    ("SendGrid",    "SG.",                                              SENDGRID_API_KEY_PATTERN),
     "huggingface": ("HuggingFace", "hf_",                                              HUGGINGFACE_KEY_PATTERN),
     "cloudflare":  ("Cloudflare",  "cfk_ OR cfut_ OR cfat_",                           CLOUDFLARE_TOKEN_PATTERN),
-    "supabase":    ("Supabase",    "sbp_ OR sb_publishable_ OR sb_secret_",            SUPABASE_KEY_PATTERN),
-    "azure":       ("Azure",       "Endpoint=sb",                                      AZURE_CONNECTION_STRING_PATTERN),
+    "azure":       ("Azure",       "Endpoint=sb OR DefaultEndpointsProtocol",           AZURE_CONNECTION_STRING_PATTERN),
+    "replicate":   ("Replicate",   "r8_",                                                REPLICATE_API_TOKEN_PATTERN),
+    "groq":        ("Groq",        "gsk_",                                              GROQ_API_KEY_PATTERN),
+    "openrouter":  ("OpenRouter",  "sk-or-",                                            OPENROUTER_API_KEY_PATTERN),
+    "together":    ("Together AI", "together_",                                         TOGETHER_API_KEY_PATTERN),
+    "mistral":     ("Mistral AI",  "mist_",                                             MISTRAL_API_KEY_PATTERN),
 }
 
 # Provider names that support live validation
 VALIDATABLE_PROVIDERS = frozenset({
-    "OpenAI", "Anthropic", "Stripe", "GitHub", "Slack",
-    "SendGrid", "HuggingFace", "Cloudflare", "Supabase",
+    "OpenAI", "Anthropic", "GitHub", "Slack",
+    "HuggingFace", "Cloudflare",
+    "Replicate", "Groq", "OpenRouter", "Together AI", "Mistral AI",
 })

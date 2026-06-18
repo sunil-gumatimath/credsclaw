@@ -1,4 +1,4 @@
-"""Pattern matching tests — all 13 provider regex patterns."""
+"""Pattern matching tests — all 14 provider regex patterns."""
 
 import re
 
@@ -7,15 +7,16 @@ from auditor import (
     OPENAI_KEY_PATTERN,
     GOOGLE_AI_KEY_PATTERN,
     AWS_ACCESS_KEY_PATTERN,
-    STRIPE_KEY_PATTERN,
     GITHUB_TOKEN_PATTERN,
     SLACK_TOKEN_PATTERN,
-    TWILIO_API_KEY_PATTERN,
-    SENDGRID_API_KEY_PATTERN,
     HUGGINGFACE_KEY_PATTERN,
     CLOUDFLARE_TOKEN_PATTERN,
-    SUPABASE_KEY_PATTERN,
     AZURE_CONNECTION_STRING_PATTERN,
+    REPLICATE_API_TOKEN_PATTERN,
+    GROQ_API_KEY_PATTERN,
+    OPENROUTER_API_KEY_PATTERN,
+    TOGETHER_API_KEY_PATTERN,
+    MISTRAL_API_KEY_PATTERN,
 )
 
 
@@ -63,14 +64,6 @@ def test_invalid_aws_key():
         assert len(re.findall(AWS_ACCESS_KEY_PATTERN, key)) == 0
 
 
-# ~~~ Stripe ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-def test_valid_stripe_key():
-    live_key = "sk_" + "live_abcdefghijklmnopqrstuvwxyz"
-    test_key = "sk_" + "test_1234567890abcdefghijklmn"
-    assert len(re.findall(STRIPE_KEY_PATTERN, live_key)) == 1
-    assert len(re.findall(STRIPE_KEY_PATTERN, test_key)) == 1
-
-
 # ~~~ GitHub ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 def test_valid_github_token():
     tokens = [
@@ -90,16 +83,6 @@ def test_valid_slack_token():
     assert len(re.findall(SLACK_TOKEN_PATTERN, token)) == 1
 
 
-# ~~~ Twilio ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-def test_valid_twilio_key():
-    assert len(re.findall(TWILIO_API_KEY_PATTERN, "SK" + "a" * 32)) == 1
-
-
-# ~~~ SendGrid ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-def test_valid_sendgrid_key():
-    assert len(re.findall(SENDGRID_API_KEY_PATTERN, "SG." + "a" * 22 + "." + "b" * 43)) == 1
-
-
 # ~~~ HuggingFace ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 def test_valid_huggingface_key():
     assert len(re.findall(HUGGINGFACE_KEY_PATTERN, "hf_" + "a" * 34)) == 1
@@ -110,10 +93,34 @@ def test_valid_cloudflare_token():
     assert len(re.findall(CLOUDFLARE_TOKEN_PATTERN, "cfk_" + "a" * 40 + "01234567")) == 1
 
 
-# ~~~ Supabase ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-def test_valid_supabase_key():
-    assert len(re.findall(SUPABASE_KEY_PATTERN, "sbp_" + "b" * 36)) == 1
-    assert len(re.findall(SUPABASE_KEY_PATTERN, "sb_secret_" + "b" * 36)) == 1
+# ~~~ Replicate ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+def test_valid_replicate_token():
+    assert len(re.findall(REPLICATE_API_TOKEN_PATTERN, "r8_" + "a" * 32)) == 1
+    assert len(re.findall(REPLICATE_API_TOKEN_PATTERN, "r8_" + "a" * 31)) == 0
+
+
+# ~~~ Groq ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+def test_valid_groq_key():
+    assert len(re.findall(GROQ_API_KEY_PATTERN, "gsk_" + "a" * 30)) == 1
+    assert len(re.findall(GROQ_API_KEY_PATTERN, "gsk_short") ) == 0
+
+
+# ~~~ OpenRouter ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+def test_valid_openrouter_key():
+    assert len(re.findall(OPENROUTER_API_KEY_PATTERN, "sk-or-" + "a" * 40)) == 1
+    assert len(re.findall(OPENROUTER_API_KEY_PATTERN, "sk-or-short")) == 0
+
+
+# ~~~ Together AI ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+def test_valid_together_key():
+    assert len(re.findall(TOGETHER_API_KEY_PATTERN, "together_" + "a" * 30)) == 1
+    assert len(re.findall(TOGETHER_API_KEY_PATTERN, "together_short")) == 0
+
+
+# ~~~ Mistral AI ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+def test_valid_mistral_key():
+    assert len(re.findall(MISTRAL_API_KEY_PATTERN, "mist_" + "a" * 30)) == 1
+    assert len(re.findall(MISTRAL_API_KEY_PATTERN, "mist_short")) == 0
 
 
 # ~~~ Azure ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
