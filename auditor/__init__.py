@@ -24,15 +24,16 @@ from auditor.patterns import (
     OPENAI_KEY_PATTERN,
     GOOGLE_AI_KEY_PATTERN,
     AWS_ACCESS_KEY_PATTERN,
-    STRIPE_KEY_PATTERN,
     GITHUB_TOKEN_PATTERN,
     SLACK_TOKEN_PATTERN,
-    TWILIO_API_KEY_PATTERN,
-    SENDGRID_API_KEY_PATTERN,
     HUGGINGFACE_KEY_PATTERN,
     CLOUDFLARE_TOKEN_PATTERN,
-    SUPABASE_KEY_PATTERN,
     AZURE_CONNECTION_STRING_PATTERN,
+    REPLICATE_API_TOKEN_PATTERN,
+    GROQ_API_KEY_PATTERN,
+    OPENROUTER_API_KEY_PATTERN,
+    TOGETHER_API_KEY_PATTERN,
+    MISTRAL_API_KEY_PATTERN,
     NOISE_SUBSTRINGS,
     PROVIDER_CONFIGS,
     VALIDATABLE_PROVIDERS,
@@ -73,7 +74,7 @@ from auditor.tracker import ProgressTracker
 
 from auditor.rate_limiter import RateLimiter
 
-from auditor.validator import VALIDATION_MAP
+from auditor.validator import VALIDATION_MAP, create_validator_session
 
 from auditor.scanner import APIAuditor
 
@@ -82,10 +83,13 @@ from auditor.exporter import export_results, export_html_results, print_summary
 __all__ = [
     # patterns
     "ANTHROPIC_KEY_PATTERN", "OPENAI_KEY_PATTERN", "GOOGLE_AI_KEY_PATTERN",
-    "AWS_ACCESS_KEY_PATTERN", "STRIPE_KEY_PATTERN", "GITHUB_TOKEN_PATTERN",
-    "SLACK_TOKEN_PATTERN", "TWILIO_API_KEY_PATTERN", "SENDGRID_API_KEY_PATTERN",
-    "HUGGINGFACE_KEY_PATTERN", "CLOUDFLARE_TOKEN_PATTERN", "SUPABASE_KEY_PATTERN",
+    "AWS_ACCESS_KEY_PATTERN", "GITHUB_TOKEN_PATTERN",
+    "SLACK_TOKEN_PATTERN",
+    "HUGGINGFACE_KEY_PATTERN", "CLOUDFLARE_TOKEN_PATTERN",
     "AZURE_CONNECTION_STRING_PATTERN",
+    "REPLICATE_API_TOKEN_PATTERN", "GROQ_API_KEY_PATTERN",
+    "OPENROUTER_API_KEY_PATTERN", "TOGETHER_API_KEY_PATTERN",
+    "MISTRAL_API_KEY_PATTERN",
     "NOISE_SUBSTRINGS", "PROVIDER_CONFIGS", "VALIDATABLE_PROVIDERS",
     "DEFAULT_VALIDATION_TIMEOUT", "DEFAULT_MAX_CONCURRENCY",
     "DEFAULT_CHECKPOINT_INTERVAL", "DEFAULT_CONFIDENCE_THRESHOLD",
@@ -101,6 +105,6 @@ __all__ = [
     "parse_csv_arg", "get_github_token", "build_arg_parser", "parse_args",
     "generate_pre_commit_config",
     # tracker / rate_limiter / validator / scanner / exporter
-    "ProgressTracker", "RateLimiter", "VALIDATION_MAP", "APIAuditor",
+    "ProgressTracker", "RateLimiter", "VALIDATION_MAP", "create_validator_session", "APIAuditor",
     "export_results", "export_html_results", "print_summary",
 ]

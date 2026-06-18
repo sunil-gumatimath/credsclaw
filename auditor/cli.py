@@ -97,7 +97,7 @@ Examples:
     )
     core.add_argument(
         "--providers", type=str, default="openai,anthropic",
-        help="Providers (comma-separated): openai,anthropic,google,aws,stripe,github,slack,twilio,sendgrid,huggingface,cloudflare,supabase,azure",
+        help="Providers (comma-separated): openai,anthropic,google,aws,github,slack,huggingface,cloudflare,azure,replicate,groq,openrouter,together,mistral",
     )
     core.add_argument(
         "--repo", type=str, default="",

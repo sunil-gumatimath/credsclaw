@@ -9,6 +9,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+
 load_dotenv()
 
 from auditor.config import load_config
@@ -125,6 +126,13 @@ async def main() -> None:
                     suffix_chunks.append(f" repo:{repo_terms}")
             else:
                 suffix_chunks = [""]
+                if args.mode in ("code", "commits"):
+                    logger.warning(
+                        "No --repo or --recent-repos-days specified. "
+                        "This will search ALL of GitHub which may return "
+                        "many results and consume significant API quota. "
+                        "Consider specifying --repo or --recent-repos-days."
+                    )
 
             # Add extension filters if mode == code
             if args.mode == "code" and args.extensions:
