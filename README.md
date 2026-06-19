@@ -421,38 +421,45 @@ tests/                          # Module-scoped test files (71 tests)
 
 ```mermaid
 flowchart TD
-    A["CLI args + YAML config"] --> B["parse_args() ← build_arg_parser()"]
-    B --> C["load_dotenv() ← GITHUB_TOKEN"]
+    A[".env → load_dotenv()"] --> B["YAML config → load_config()"]
+    B --> C["CLI + config → parse_args()"]
     C --> D["ProgressTracker ← checkpoint/resume"]
     D --> E["RateLimiter ← init token bucket"]
 
-    E --> F{recent-repos-days?}
-    F -- Yes --> G["discover_recent_repositories()"]
-    G --> H["_fetch_initial_rate_limit()"]
-    H --> I["Chunk repos (groups of 5)"]
-    I --> J["For each chunk → generate query suffix"]
+    E --> F{"recent-repos-days?"}
+    F -- Yes --> G["discover_recent_repositories()\n(calls _fetch_initial_rate_limit() internally)"]
+    G --> H["Chunk repos (groups of 5)"]
+    H --> I["Build query suffix per chunk\n(+ extension filter if --extensions)"]
 
-    F -- No --> H2["_fetch_initial_rate_limit()"]
-    H2 --> J
+    F -- No --> I
+    I --> J["Expand 'all' providers →\nselected provider list"]
 
-    J --> K["APIAuditor (async) per provider"]
-    K --> L["audit_api_keys()"]
-    K --> M["audit_commit_messages()"]
-    K --> N["audit_local_directory()"]
-    K --> O["audit_git_history()"]
+    J --> K["async with APIAuditor(...) as auditor:"]
+    K --> L["For each (provider, suffix_chunk):\n create asyncio task"]
 
-    L & M --> P["rate_limiter.acquire()"]
-    P --> Q["GitHub API request"]
-    Q --> R["_run_item_loop() ← semaphore"]
-    R --> S["extract_candidates() ← regex"]
-    S --> T["batch_validate_keys() ← shared session"]
-    T --> U["ProgressTracker.save_progress()"]
+    L --> M{"Mode?"}
+    M -- code --> N["audit_api_keys()"]
+    M -- commits --> O["audit_commit_messages()"]
+    M -- local --> P["audit_local_directory()"]
+    M -- git-history --> Q["audit_git_history()"]
 
-    N --> R
+    N --> R["_fetch_initial_rate_limit()"]
     O --> R
+    R --> S["rate_limiter.acquire()"]
+    S --> T["GitHub API search request"]
+    T --> U["Filter results (stars, language, date)"]
 
-    U --> V["export_results() / export_html_results()"]
-    V --> W["output/audit_results.{json,csv,txt,html}"]
+    P --> V["_run_item_loop() ← semaphore"]
+    Q --> V
+    U --> V
+
+    V --> W["extract_candidates() ← regex\nconfidence scoring\nallow/deny filtering"]
+    W --> X["batch_validate_keys()\n(shared aiohttp session)"]
+    X --> Y["ProgressTracker.save_progress()\n(at --checkpoint-interval)"]
+
+    Y --> Z["asyncio.gather() completes"]
+    Z --> AA["export_results() / export_html_results()"]
+    AA --> AB["output/audit_results.{json,csv,txt,html}"]
 ```
 
 ### Key Design Decisions
