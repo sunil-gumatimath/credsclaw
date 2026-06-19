@@ -7,8 +7,8 @@ ANTHROPIC_KEY_PATTERN = (
     r"\bsk-ant-(?:api\d{2}|oat\d{2}|admin|auth\d{2})-[A-Za-z0-9_-]{40,}\b"
 )
 OPENAI_KEY_PATTERN = (
-    r"\b(?:sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,100}T3BlbkFJ"
-    r"[A-Za-z0-9_-]{20,100}|sk-[A-Za-z0-9]{48})\b"
+    r"\b(?:sk-(?:proj|svcacct|admin|svc|session)-[A-Za-z0-9_-]{20,100}T3BlbkFJ"
+    r"[A-Za-z0-9_-]{20,100}|sk-[A-Za-z0-9_-]{48})\b"
 )
 GOOGLE_AI_KEY_PATTERN = r"\b(?:AIza[A-Za-z0-9_-]{35}|AQ\.[A-Za-z0-9_-]{35,}|ya29\.[A-Za-z0-9_-]{30,})\b"
 AWS_ACCESS_KEY_PATTERN = r"\b(?:AKIA|ASIA|ABIA|ACCA|APKA|AIDA|AROA|AIPA|ANPA|AGPA|ASCA)[0-9A-Z]{16}\b"
@@ -23,18 +23,18 @@ SLACK_TOKEN_PATTERN = (
     r"hooks\.slack\.com/services/[A-Za-z0-9/]+?)\b"
 )
 HUGGINGFACE_KEY_PATTERN = r"\bhf_[a-zA-Z0-9]{34}\b"
-CLOUDFLARE_TOKEN_PATTERN = r"\b(?:cfk_|cfut_|cfat_|cft_)[A-Za-z0-9]{30,50}[0-9a-f]{6,16}\b"
+CLOUDFLARE_TOKEN_PATTERN = r"\b(?:cfk_|cfut_|cfat_|cft_)[A-Za-z0-9_-]{30,50}[0-9a-f]{6,16}\b"
 AZURE_CONNECTION_STRING_PATTERN = (
     r"(?:Endpoint=sb://[^;]+;SharedAccessKeyName=[^;]+;"
     r"SharedAccessKey=[A-Za-z0-9+/=]+|"
     r"DefaultEndpointsProtocol=https?;AccountName=[^;]+;"
     r"AccountKey=[A-Za-z0-9+/=]{40,}={0,2})"
 )
-REPLICATE_API_TOKEN_PATTERN = r"\br8_[A-Za-z0-9]{32,}\b"
+REPLICATE_API_TOKEN_PATTERN = r"\br8_[A-Za-z0-9]{37}\b"
 GROQ_API_KEY_PATTERN = r"\bgsk_[A-Za-z0-9_-]{30,}\b"
 OPENROUTER_API_KEY_PATTERN = r"\bsk-or-[A-Za-z0-9_-]{40,}\b"
-TOGETHER_API_KEY_PATTERN = r"\btogether_[A-Za-z0-9]{30,}\b"
-MISTRAL_API_KEY_PATTERN = r"\bmist_[A-Za-z0-9]{30,}\b"
+TOGETHER_API_KEY_PATTERN = r"\btogether_[A-Za-z0-9_-]{30,}\b"
+MISTRAL_API_KEY_PATTERN = r"\bmist_[A-Za-z0-9_-]{30,}\b"
 
 # ---------------------------------------------------------------------------
 # Noise / placeholder detection

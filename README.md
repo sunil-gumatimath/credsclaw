@@ -226,19 +226,19 @@ python -m auditor --mode git-history --dir ./my-repo --providers github,slack
 | Provider | Pattern Prefix(es) | Live Validation |
 |---|---|---|
 | **Anthropic** | `sk-ant-apiXX-`, `sk-ant-oatXX-`, `sk-ant-admin-` | ✓ |
-| **OpenAI** | `sk-` (classic), `sk-proj-`, `sk-svcacct-`, `sk-admin-` (with `T3BlbkFJ` marker) | ✓ |
+| **OpenAI** | `sk-` (classic, allows `-`/`_`), `sk-proj-`, `sk-svcacct-`, `sk-admin-`, `sk-svc-`, `sk-session-` (with `T3BlbkFJ` marker) | ✓ |
 | **Google AI** | `AIza...`, `AQ....`, `ya29....` | — |
 | **AWS** | 11 prefixes: `AKIA`, `ASIA`, `ABIA`, `ACCA`, `APKA`, `AIDA`, `AROA`, `AIPA`, `ANPA`, `AGPA`, `ASCA` | — |
 | **GitHub** | `ghp_`, `gho_`, `ghs_`, `ghr_`, `ghu_`, `github_pat_` | ✓ |
 | **Slack** | `xoxb-`, `xoxp-`, `xoxa-`, `xoxs-`, `xoxo-`, `xoxr-`, `xoxe-`, `xapp-`, `xwfp-`, `hooks.slack.com` | ✓ |
 | **HuggingFace** | `hf_` | ✓ |
-| **Cloudflare** | `cfk_`, `cfut_`, `cfat_`, `cft_` | ✓ |
+| **Cloudflare** | `cfk_`, `cfut_`, `cfat_`, `cft_` (body allows `-`/`_`) | ✓ |
 | **Azure** | Connection strings (`Endpoint=sb://` or `DefaultEndpointsProtocol`) | — |
-| **Replicate** | `r8_` | ✓ |
+| **Replicate** | `r8_` + exactly 37 chars (40 total) | ✓ |
 | **Groq** | `gsk_` | ✓ |
 | **OpenRouter** | `sk-or-` | ✓ |
-| **Together AI** | `together_` | ✓ |
-| **Mistral AI** | `mist_` | ✓ |
+| **Together AI** | `together_` (allows `-`/`_`) | ✓ |
+| **Mistral AI** | `mist_` (allows `-`/`_`) | ✓ |
 
 Live validatable providers ping their respective APIs to confirm whether the discovered key is still active.
 
@@ -531,7 +531,7 @@ Stripe, Twilio, SendGrid, and Supabase were removed. If you need them back, see 
 
 **Q: What are the new AI hosting providers?**
 
-Replicate (`r8_`), Groq (`gsk_`), OpenRouter (`sk-or-`), Together AI (`together_`), and Mistral AI (`mist_`) — all with live validation support.
+Replicate (`r8_` + 37 chars), Groq (`gsk_`), OpenRouter (`sk-or-`), Together AI (`together_`), and Mistral AI (`mist_`) — all with live validation support.
 
 ---
 
