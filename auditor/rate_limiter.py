@@ -8,9 +8,18 @@ from typing import Dict
 
 logger = logging.getLogger(__name__)
 
-# GitHub search API: 30 req/min for authenticated, 10 for unauthenticated.
-# Start conservative; ratchet up from actual response headers.
-SEARCH_QUOTA = 25
+# GitHub search API: 30 req/min for authenticated *repo* search, but
+# *code* search is capped at 10 req/min even when authenticated. Start
+# conservative (below 10) so the first concurrent volley doesn't blow the
+# quota before any X-RateLimit header has been observed; the bucket then
+# ratchets to the real value reported by the response headers.
+SEARCH_QUOTA = 8
+
+# Minimum spacing between search requests. GitHub enforces a *secondary*
+# (abuse-detection) rate limit that rejects simultaneous bursts with 403,
+# even when the primary 10/min budget has tokens left. Spacing requests
+# ~7s apart keeps us under 10/min no matter how many tasks are concurrent.
+MIN_REQUEST_INTERVAL = 7.0
 
 
 class RateLimiter:
@@ -26,6 +35,7 @@ class RateLimiter:
         self._lock = asyncio.Lock()
         self._remaining = SEARCH_QUOTA
         self._reset_time: float = 0.0
+        self._last_request_time: float = 0.0
 
     # ------------------------------------------------------------------
     # Public helpers called by scanner.py
@@ -35,20 +45,37 @@ class RateLimiter:
         """Block until a search-API token is available.
 
         Call *before* every GitHub search GET so the token bucket prevents
-        concurrent tasks from collectively overshooting the quota.
+        concurrent tasks from collectively overshooting the quota. Also
+        enforces a minimum spacing between requests to avoid GitHub's
+        secondary (abuse-detection) rate limit, which rejects bursts with
+        403 even when the primary quota has tokens remaining.
         """
         while True:
             async with self._lock:
-                if self._remaining > 0:
-                    self._remaining -= 1
-                    return
                 now = time.time()
-                if self._reset_time > now:
+                # Enforce minimum spacing between consecutive requests.
+                elapsed = now - self._last_request_time
+                if elapsed < MIN_REQUEST_INTERVAL:
+                    spacing_wait = MIN_REQUEST_INTERVAL - elapsed
+                else:
+                    spacing_wait = 0.0
+
+                if self._remaining > 0 and spacing_wait == 0.0:
+                    self._remaining -= 1
+                    self._last_request_time = now
+                    return
+
+                # Either no tokens left, or we must wait for spacing.
+                if spacing_wait > 0.0:
+                    wait = spacing_wait
+                elif self._reset_time > now:
                     wait = self._reset_time - now + 1.0
                 else:
                     wait = 3.0
-            logger.warning(
-                "Rate-limit token bucket empty. Waiting %.0fs ...", wait
+            logger.debug(
+                "Rate-limit throttle: waiting %.1fs "
+                "(tokens remaining=%s, min_interval=%ss)",
+                wait, self._remaining, MIN_REQUEST_INTERVAL,
             )
             await asyncio.sleep(wait)
 
@@ -58,9 +85,15 @@ class RateLimiter:
             raw_remaining = headers.get("X-RateLimit-Remaining")
             raw_reset = headers.get("X-RateLimit-Reset")
             if raw_remaining is not None:
-                self._remaining = int(raw_remaining)
+                try:
+                    self._remaining = int(raw_remaining)
+                except (ValueError, TypeError):
+                    pass
             if raw_reset is not None:
-                self._reset_time = float(raw_reset)
+                try:
+                    self._reset_time = float(raw_reset)
+                except (ValueError, TypeError):
+                    pass
 
     async def wait_if_needed(self, status: int, response_headers: Dict[str, str]) -> None:
         """Legacy hook -- called after each response.  Also updates bucket."""
@@ -68,7 +101,10 @@ class RateLimiter:
 
         retry_after = response_headers.get("Retry-After")
         if retry_after and status in {403, 429}:
-            wait_time = max(1, int(retry_after))
+            try:
+                wait_time = max(1, int(retry_after))
+            except (ValueError, TypeError):
+                wait_time = 5
             logger.warning("Rate-limited (Retry-After). Waiting %s seconds...", wait_time)
             await asyncio.sleep(wait_time)
             return

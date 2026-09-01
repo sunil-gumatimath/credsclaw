@@ -52,7 +52,17 @@ def export_results(
         fieldnames = sorted({k for row in progress.found_keys for k in row.keys()})
         writer = csv.DictWriter(csv_buffer, fieldnames=fieldnames)
         writer.writeheader()
-        writer.writerows(progress.found_keys)
+        # Sanitize CSV injection: prefix formula characters with single quote
+        sanitized_rows = []
+        for row in progress.found_keys:
+            sanitized = {}
+            for k, v in row.items():
+                if isinstance(v, str) and v and v[0] in ("=", "+", "-", "@", "\t", "\r"):
+                    sanitized[k] = "'" + v
+                else:
+                    sanitized[k] = v
+            sanitized_rows.append(sanitized)
+        writer.writerows(sanitized_rows)
         raw_bytes = csv_buffer.getvalue().encode("utf-8")
     elif output_format == "txt":
         lines: List[str] = []
