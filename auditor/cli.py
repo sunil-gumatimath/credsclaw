@@ -1,11 +1,14 @@
 """CLI argument parsing, config merge, and pre-commit hook generation."""
 
 import argparse
+import getpass
 import logging
 import os
+import warnings
 from pathlib import Path
 
 from auditor.config import DEFAULT_CONFIG_FILE, apply_config_to_parser
+from auditor.patterns import PROVIDER_CONFIGS
 
 logger = logging.getLogger(__name__)
 
@@ -26,9 +29,12 @@ repos:
 """
 
 
-def generate_pre_commit_config(path: str = ".pre-commit-config.yaml") -> str:
+def generate_pre_commit_config(path: str = ".pre-commit-config.yaml", force: bool = False) -> str:
     """Write a .pre-commit-config.yaml hook file and return its path."""
     out = Path(path)
+    if out.exists() and not force:
+        logger.error("File already exists: %s (use --force to overwrite)", out.resolve())
+        raise FileExistsError(f"File already exists: {out.resolve()}")
     out.write_text(PRE_COMMIT_HOOK_TEMPLATE, encoding="utf-8")
     logger.info("Pre-commit hook config written to %s", out.resolve())
     return str(out.resolve())
@@ -45,11 +51,35 @@ def parse_csv_arg(value: str) -> list[str]:
 
 
 def get_github_token() -> str:
-    """Read GITHUB_TOKEN from env or prompt the user."""
+    """Read GITHUB_TOKEN from env or prompt the user securely."""
     token = os.getenv("GITHUB_TOKEN")
     if token:
         return token
-    return input("Enter your GitHub token: ").strip()
+    try:
+        token = getpass.getpass("Enter your GitHub token: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        return ""
+    if token:
+        logger.warning("GITHUB_TOKEN env var is preferred over interactive prompt")
+    return token
+
+
+def _validate_numeric_args(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    """Validate numeric argument ranges; errors via parser.error (SystemExit 2)."""
+    if args.max_concurrency is not None and args.max_concurrency < 1:
+        parser.error("max_concurrency must be >=1")
+    if args.timeout is not None and args.timeout < 1:
+        parser.error("timeout must be >=1")
+    if args.checkpoint_interval is not None and args.checkpoint_interval < 1:
+        parser.error("checkpoint_interval must be >=1")
+    if args.confidence_threshold is not None and not 0 <= args.confidence_threshold <= 100:
+        parser.error("confidence_threshold must be 0-100")
+    if args.max_pages is not None and args.max_pages < 1:
+        parser.error("max_pages must be >=1")
+    if args.min_stars is not None and args.min_stars < 0:
+        parser.error("min_stars must be >=0")
+    if args.recent_repos_days is not None and args.recent_repos_days < 1:
+        parser.error("recent_repos_days must be >=1")
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +166,7 @@ Examples:
     gh.add_argument(
         "--sort",
         type=str,
-        choices=["indexed", ""],
+        choices=["indexed"],
         default="indexed",
         help="Sort mode (default: indexed)",
     )
@@ -218,7 +248,7 @@ Examples:
         "--encryption-key",
         type=str,
         default="",
-        help="Fernet key (or use OUTPUT_ENCRYPTION_KEY env var)",
+        help="Fernet key (or use OUTPUT_ENCRYPTION_KEY env var) -- deprecated, use env var",
     )
     sec.add_argument(
         "--confidence-threshold",
@@ -240,6 +270,11 @@ Examples:
         action="store_true",
         help="Generate a .pre-commit-config.yaml file",
     )
+    util.add_argument(
+        "--force",
+        action="store_true",
+        help="Force overwrite of existing files (e.g., pre-commit hook)",
+    )
 
     return parser
 
@@ -260,6 +295,16 @@ def parse_args(argv: list[str] | None = None, config: dict | None = None) -> arg
         ext = fmt_to_ext.get(args.output_format, "json")
         args.output_file = f"output/audit_results.{ext}"
 
+    # Early numeric validation
+    _validate_numeric_args(args, parser)
+
+    # Validate providers
+    if args.providers:
+        selected = [p.strip().lower() for p in args.providers.split(",") if p.strip()]
+        invalid = [p for p in selected if p not in PROVIDER_CONFIGS and p != "all"]
+        if invalid:
+            parser.error(f"unknown providers: {invalid}")
+
     # Validation
     if args.recent_repos_days is not None:
         if args.repo:
@@ -272,11 +317,10 @@ def parse_args(argv: list[str] | None = None, config: dict | None = None) -> arg
             )
 
     if args.encryption_key:
-        import warnings
-
         warnings.warn(
             "--encryption-key is deprecated and will be removed in a future release. "
-            "Use the OUTPUT_ENCRYPTION_KEY environment variable instead.",
+            "Use the OUTPUT_ENCRYPTION_KEY environment variable instead. "
+            "This value is visible in process listings (ps).",
             DeprecationWarning,
             stacklevel=2,
         )

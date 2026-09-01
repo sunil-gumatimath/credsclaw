@@ -30,6 +30,7 @@ CONFIG_ARG_MAP: dict[str, str] = {
     "deny_patterns": "deny_patterns",
     "store_raw_keys": "store_raw_keys",
     "encrypt_output": "encrypt_output",
+    "encryption_key": "encryption_key",
     "timeout": "timeout",
     "recent_repos_days": "recent_repos_days",
     "sort": "sort",
@@ -73,6 +74,11 @@ def apply_config_to_parser(config: dict, parser) -> None:
     CLI flags take precedence because argparse applies the user's
     explicit values *after* the defaults set here.
     """
+    # Warn on unknown keys
+    for k in config:
+        if k not in CONFIG_ARG_MAP:
+            logger.warning("Unknown config key '%s' ignored", k)
+
     for config_key, arg_dest in CONFIG_ARG_MAP.items():
         if config_key not in config:
             continue
@@ -82,5 +88,19 @@ def apply_config_to_parser(config: dict, parser) -> None:
         # so they match the argparse ``type=str`` storage.
         if config_key in PLURAL_LIST_KEYS and isinstance(value, list):
             value = ",".join(str(v) for v in value)
+
+        # Type coercion for numeric fields
+        if config_key in ("max_concurrency", "checkpoint_interval", "max_pages", "min_stars", "recent_repos_days", "timeout"):
+            try:
+                value = int(value)  # type: ignore[assignment]
+            except (ValueError, TypeError):
+                logger.error("Invalid integer for %s: %r", config_key, value)
+                continue
+        if config_key == "confidence_threshold":
+            try:
+                value = float(value)  # type: ignore[assignment]
+            except (ValueError, TypeError):
+                logger.error("Invalid float for %s: %r", config_key, value)
+                continue
 
         parser.set_defaults(**{arg_dest: value})

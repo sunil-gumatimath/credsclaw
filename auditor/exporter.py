@@ -1,10 +1,12 @@
 """Export results in JSON, CSV, TXT, or HTML format, plus summary printing."""
 
+import contextlib
 import csv
 import html as _html
 import io
 import json
 import logging
+import os
 from pathlib import Path
 
 from auditor.tracker import ProgressTracker
@@ -19,8 +21,35 @@ def maybe_encrypt_bytes(data: bytes, encryption_key: str) -> bytes:
         from cryptography.fernet import Fernet
     except ImportError as exc:
         raise RuntimeError("cryptography package is required for encrypted output") from exc
-    cipher = Fernet(encryption_key.encode("utf-8"))
+    try:
+        cipher = Fernet(encryption_key.encode("utf-8"))
+    except ValueError as exc:
+        raise ValueError(
+            "Invalid encryption key. Generate one with: "
+            "python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'"
+        ) from exc
     return cipher.encrypt(data)
+
+
+def _secure_write(path: Path, data: bytes) -> None:
+    """Write bytes to path with owner-only permissions (0o600)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Path traversal warning: warn if outside cwd
+    try:
+        resolved = path.resolve()
+        cwd = Path.cwd().resolve()
+        try:
+            resolved.relative_to(cwd)
+        except ValueError:
+            logger.warning("Output path %s is outside current directory %s", resolved, cwd)
+    except Exception:
+        pass
+    path.write_bytes(data)
+    with contextlib.suppress(OSError):
+        os.chmod(path, 0o600)
+
+
+CSV_FIELDS = ["provider", "severity", "confidence", "repo", "path", "url", "key_masked", "key_hash", "valid", "timestamp"]
 
 
 def export_results(
@@ -46,15 +75,18 @@ def export_results(
         raw_bytes = json.dumps(payload, indent=2).encode("utf-8")
     elif output_format == "csv":
         csv_buffer = io.StringIO()
-        fieldnames = sorted({k for row in progress.found_keys for k in row})
-        writer = csv.DictWriter(csv_buffer, fieldnames=fieldnames)
+        # Use explicit field ordering for stable schema
+        # Collect union but order by CSV_FIELDS first
+        all_keys = {k for row in progress.found_keys for k in row}
+        fieldnames = [f for f in CSV_FIELDS if f in all_keys] + sorted(all_keys - set(CSV_FIELDS))
+        writer = csv.DictWriter(csv_buffer, fieldnames=fieldnames, quoting=csv.QUOTE_MINIMAL)
         writer.writeheader()
-        # Sanitize CSV injection: prefix formula characters with single quote
+        # Sanitize CSV injection: strip leading whitespace then check formula chars
         sanitized_rows = []
         for row in progress.found_keys:
             sanitized = {}
             for k, v in row.items():
-                if isinstance(v, str) and v and v[0] in ("=", "+", "-", "@", "\t", "\r"):
+                if isinstance(v, str) and v.lstrip() and v.lstrip()[0] in ("=", "+", "-", "@", "\t", "\r"):
                     sanitized[k] = "'" + v
                 else:
                     sanitized[k] = v
@@ -69,6 +101,8 @@ def export_results(
                 lines.append(f"  Key: {key_data['key']}")
             lines.append(f"  Key masked: {key_data['key_masked']}")
             lines.append(f"  Key hash: {key_data['key_hash']}")
+            lines.append(f"  Confidence: {key_data.get('confidence', 'N/A')}")
+            lines.append(f"  Severity: {key_data.get('severity', 'N/A')}")
             if key_data.get("valid") is not None:
                 lines.append(f"  Valid: {key_data['valid']}")
             lines.append(f"  URL: {key_data.get('url', 'N/A')}")
@@ -79,17 +113,18 @@ def export_results(
         raise ValueError(f"Unsupported output format: {output_format}")
 
     output_path = Path(output_file)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
 
     if encrypt_output:
         if not encryption_key:
             raise ValueError("Encryption enabled but no encryption key provided")
         encrypted = maybe_encrypt_bytes(raw_bytes, encryption_key)
-        output_path.write_bytes(encrypted)
+        _secure_write(output_path, encrypted)
         logger.info("Encrypted results exported to %s", output_path)
     else:
-        output_path.write_bytes(raw_bytes)
+        _secure_write(output_path, raw_bytes)
         logger.info("Results exported to %s", output_path)
+        if any("key" in k for k in progress.found_keys):
+            logger.warning("Raw secrets are stored in %s — protect this file (chmod 600)", output_path)
 
 
 def export_html_results(
@@ -103,10 +138,10 @@ def export_html_results(
         logger.info("No keys found to export as HTML")
         return
 
-    # Serialise to JSON for embedding in <script>.
-    # Escape </ to <\/ to prevent </script> injection in the HTML page.
+    # Properly escape JSON for embedding in <script> block
     keys_json = json.dumps(progress.found_keys, indent=2, ensure_ascii=False)
-    keys_json = keys_json.replace("</", r"<\/")
+    # Escape HTML-sensitive chars to prevent script injection
+    keys_json = keys_json.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026").replace("</", r"<\/")
     total = len(progress.found_keys)
 
     sev_counts: dict[str, int] = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
@@ -162,9 +197,9 @@ def export_html_results(
 </head>
 <body>
 <h1>\U0001f6e1\ufe0f CredsClaw Report</h1>
-<p class="subtitle">{_html.escape(str(total))} finding(s) \\u2022 Avg confidence {
+<p class="subtitle">{_html.escape(str(total))} finding(s) \u2022 Avg confidence {
         _html.escape(str(avg_conf))
-    }/100 \\u2022 Generated {_html.escape(safe_utc_now()[:10])}</p>
+    }/100 \u2022 Generated {_html.escape(safe_utc_now()[:10])}</p>
 
 <div class="stats">
   <div class="stat-card"><div class="num">{total}</div><div class="label">Total Findings</div></div>
@@ -183,7 +218,7 @@ def export_html_results(
     }
 </div>
 
-<input type="text" id="filter" class="filter-input" placeholder="Filter by provider, severity, repo\\u2026" oninput="applyFilter()" />
+<input type="text" id="filter" class="filter-input" placeholder="Filter by provider, severity, repo\u2026" oninput="applyFilter()" />
 
 <table id="results-table">
 <thead>
@@ -208,6 +243,11 @@ function escapeHtml(s) {{
   return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
 }}
 
+function isSafeUrl(url) {{
+  if (!url) return false;
+  return url.startsWith("https://") || url.startsWith("file://");
+}}
+
 function badge(text, cls) {{
   return `<span class="badge ${{cls}}">${{escapeHtml(text)}}</span>`;
 }}
@@ -226,7 +266,7 @@ function render(rows) {{
     </tr>
     <tr id="detail-${{i}}" class="detail-row" data-index="${{i}}">
       <td colspan="7" class="detail-cell">
-        <strong>URL:</strong> ${{k.url ? `<a href="${{escapeHtml(k.url)}}">${{escapeHtml(k.url)}}</a>` : "&mdash;"}}<br>
+        <strong>URL:</strong> ${{k.url && isSafeUrl(k.url) ? `<a href="${{escapeHtml(k.url)}}">${{escapeHtml(k.url)}}</a>` : escapeHtml(k.url) || "&mdash;"}}<br>
         <strong>Hash:</strong> <span class="mono">${{escapeHtml(k.key_hash)}}</span><br>
         <strong>Timestamp:</strong> ${{escapeHtml(k.timestamp)}}<br>
         ${{k.commit ? `<strong>Commit:</strong> <span class="mono">${{escapeHtml(k.commit)}}</span><br>` : ""}}
@@ -284,16 +324,15 @@ function sortTable(col) {{
 
     raw_bytes = html.encode("utf-8")
     output_path = Path(output_file)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
 
     if encrypt_output:
         if not encryption_key:
             raise ValueError("Encryption enabled but no encryption key provided")
         encrypted = maybe_encrypt_bytes(raw_bytes, encryption_key)
-        output_path.write_bytes(encrypted)
+        _secure_write(output_path, encrypted)
         logger.info("Encrypted HTML report exported to %s", output_path)
     else:
-        output_path.write_bytes(raw_bytes)
+        _secure_write(output_path, raw_bytes)
         logger.info("HTML report exported to %s", output_path)
 
 
@@ -375,16 +414,15 @@ def export_sarif_results(
 
     raw_bytes = json.dumps(sarif, indent=2).encode("utf-8")
     output_path = Path(output_file)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
 
     if encrypt_output:
         if not encryption_key:
             raise ValueError("Encryption enabled but no encryption key provided")
         encrypted = maybe_encrypt_bytes(raw_bytes, encryption_key)
-        output_path.write_bytes(encrypted)
+        _secure_write(output_path, encrypted)
         logger.info("Encrypted SARIF results exported to %s", output_path)
     else:
-        output_path.write_bytes(raw_bytes)
+        _secure_write(output_path, raw_bytes)
         logger.info("SARIF results exported to %s", output_path)
 
 

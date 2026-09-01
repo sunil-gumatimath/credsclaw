@@ -48,11 +48,12 @@ async def main() -> None:
     early_parser = argparse.ArgumentParser(add_help=False)
     early_parser.add_argument("--config", type=str, default="auditor.yaml")
     early_parser.add_argument("--generate-pre-commit-hook", action="store_true")
+    early_parser.add_argument("--force", action="store_true")
     early_args, _ = early_parser.parse_known_args()
 
     # Handle standalone utility flags before full parsing
     if early_args.generate_pre_commit_hook:
-        generate_pre_commit_config()
+        generate_pre_commit_config(force=early_args.force)
         return
 
     # Ensure output directory exists and set up file logging
