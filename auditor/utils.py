@@ -1,11 +1,10 @@
 """Shared utility functions used across the auditor package."""
 
 import re
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 
-def parse_iso8601(value: str) -> Optional[datetime]:
+def parse_iso8601(value: str) -> datetime | None:
     """Parse an ISO-8601 date string, handling Z suffix and fractional seconds."""
     if not value or not value.strip():
         return None
@@ -22,7 +21,7 @@ def parse_iso8601(value: str) -> Optional[datetime]:
         dt = datetime.fromisoformat(value)
         # Ensure timezone-aware (assume UTC if naive, e.g. --updated-after 2024-01-01)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
         return dt
     except (ValueError, OverflowError):
         return None
@@ -30,4 +29,4 @@ def parse_iso8601(value: str) -> Optional[datetime]:
 
 def safe_utc_now() -> str:
     """Return the current UTC time as an ISO-8601 string."""
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()

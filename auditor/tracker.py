@@ -3,7 +3,7 @@
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any
 
 from auditor.scoring import fingerprint_key, mask_key
 from auditor.utils import safe_utc_now
@@ -21,10 +21,10 @@ class ProgressTracker:
     ):
         self.checkpoint_file = checkpoint_file
         self.store_raw_keys = store_raw_keys
-        self.processed: Set[str] = set()
-        self.found_keys: List[Dict[str, Any]] = []
-        self.seen_hashes: Set[str] = set()
-        self.checkpoint_timestamp: Optional[str] = None
+        self.processed: set[str] = set()
+        self.found_keys: list[dict[str, Any]] = []
+        self.seen_hashes: set[str] = set()
+        self.checkpoint_timestamp: str | None = None
         self.load_progress()
 
     def load_progress(self) -> None:
@@ -32,7 +32,7 @@ class ProgressTracker:
         if not path.exists():
             return
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 data = json.load(f)
             self.processed = set(data.get("processed", []))
             self.found_keys = data.get("found_keys", [])
@@ -84,9 +84,10 @@ class ProgressTracker:
 
             path = Path(self.checkpoint_file)
             path.parent.mkdir(parents=True, exist_ok=True)
-            import tempfile
             import os
-            tmp_fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix='.tmp')
+            import tempfile
+
+            tmp_fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
             try:
                 with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
                     json.dump(payload, f, indent=2)
@@ -106,7 +107,7 @@ class ProgressTracker:
     def is_duplicate_hash(self, key_hash: str) -> bool:
         return key_hash in self.seen_hashes
 
-    def add_key(self, key_data: Dict[str, Any]) -> None:
+    def add_key(self, key_data: dict[str, Any]) -> None:
         key_hash = key_data["key_hash"]
         if key_hash not in self.seen_hashes:
             self.seen_hashes.add(key_hash)

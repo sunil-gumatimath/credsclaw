@@ -4,7 +4,6 @@ per-process token bucket to prevent concurrent-task stampedes."""
 import asyncio
 import logging
 import time
-from typing import Dict
 
 logger = logging.getLogger(__name__)
 
@@ -73,13 +72,14 @@ class RateLimiter:
                 else:
                     wait = 3.0
             logger.debug(
-                "Rate-limit throttle: waiting %.1fs "
-                "(tokens remaining=%s, min_interval=%ss)",
-                wait, self._remaining, MIN_REQUEST_INTERVAL,
+                "Rate-limit throttle: waiting %.1fs (tokens remaining=%s, min_interval=%ss)",
+                wait,
+                self._remaining,
+                MIN_REQUEST_INTERVAL,
             )
             await asyncio.sleep(wait)
 
-    async def update_from_headers(self, headers: Dict[str, str]) -> None:
+    async def update_from_headers(self, headers: dict[str, str]) -> None:
         """Update the token bucket from GitHub response headers."""
         async with self._lock:
             raw_remaining = headers.get("X-RateLimit-Remaining")
@@ -95,7 +95,7 @@ class RateLimiter:
                 except (ValueError, TypeError):
                     pass
 
-    async def wait_if_needed(self, status: int, response_headers: Dict[str, str]) -> None:
+    async def wait_if_needed(self, status: int, response_headers: dict[str, str]) -> None:
         """Legacy hook -- called after each response.  Also updates bucket."""
         await self.update_from_headers(response_headers)
 
@@ -121,6 +121,8 @@ class RateLimiter:
         wait_time = min(2**attempt, 300)
         logger.warning(
             "Backing off for %s seconds (attempt %s/%s)",
-            wait_time, attempt + 1, self.max_retries,
+            wait_time,
+            attempt + 1,
+            self.max_retries,
         )
         await asyncio.sleep(wait_time)

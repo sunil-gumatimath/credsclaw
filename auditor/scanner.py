@@ -3,14 +3,11 @@
 import asyncio
 import base64
 import logging
-import os
 import re
-import subprocess
-
-from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
-
 import ssl
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
 
 import aiohttp
 
@@ -19,19 +16,20 @@ try:
 except ImportError:
     tqdm = None
 
+from datetime import UTC
+
+from auditor.cli import parse_csv_arg
 from auditor.patterns import NOISE_SUBSTRINGS
-from auditor.rate_limiter import SEARCH_QUOTA
+from auditor.rate_limiter import SEARCH_QUOTA, RateLimiter
 from auditor.scoring import (
     calculate_confidence_score,
-    get_severity_level,
     fingerprint_key,
+    get_severity_level,
     mask_key,
 )
-from auditor.utils import parse_iso8601, safe_utc_now
-from auditor.rate_limiter import RateLimiter
 from auditor.tracker import ProgressTracker
-from auditor.validator import create_validator_session, VALIDATION_MAP
-from auditor.cli import parse_csv_arg
+from auditor.utils import parse_iso8601, safe_utc_now
+from auditor.validator import VALIDATION_MAP, create_validator_session
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +48,7 @@ class APIAuditor:
         self.rate_limiter = rate_limiter
         self.progress = progress
         self.args = args
-        self.session: Optional[aiohttp.ClientSession] = None
+        self.session: aiohttp.ClientSession | None = None
         self.lock = asyncio.Lock()
         self.semaphore = asyncio.Semaphore(max(1, args.max_concurrency))
         self.compiled_allow = (
@@ -59,13 +57,11 @@ class APIAuditor:
             else []
         )
         self.compiled_deny = (
-            [re.compile(p, re.IGNORECASE) for p in args.deny_patterns]
-            if args.deny_patterns
-            else []
+            [re.compile(p, re.IGNORECASE) for p in args.deny_patterns] if args.deny_patterns else []
         )
-        self.stats_by_provider: Dict[str, Dict[str, int]] = {}
-        self.stats_by_repo: Dict[str, int] = {}
-        self._provider_found_count: Dict[str, int] = {}
+        self.stats_by_provider: dict[str, dict[str, int]] = {}
+        self.stats_by_repo: dict[str, int] = {}
+        self._provider_found_count: dict[str, int] = {}
         self.since_dt = None
         if args.since_checkpoint and progress.checkpoint_timestamp:
             self.since_dt = parse_iso8601(progress.checkpoint_timestamp)
@@ -80,7 +76,7 @@ class APIAuditor:
     # Lifecycle
     # ------------------------------------------------------------------
     async def __aenter__(self):
-        connector_kwargs: Dict[str, Any] = {}
+        connector_kwargs: dict[str, Any] = {}
         if getattr(self.args, "no_ssl_verify", False):
             ssl_ctx = ssl.create_default_context()
             ssl_ctx.check_hostname = False
@@ -108,7 +104,7 @@ class APIAuditor:
         self.stats_by_repo[repo] = self.stats_by_repo.get(repo, 0) + 1
         self._provider_found_count[provider] = self._provider_found_count.get(provider, 0) + 1
 
-    def _record_validation(self, provider: str, valid: Optional[bool]) -> None:
+    def _record_validation(self, provider: str, valid: bool | None) -> None:
         provider_stats = self.stats_by_provider.setdefault(
             provider, {"found": 0, "validated_true": 0, "validated_false": 0}
         )
@@ -124,6 +120,7 @@ class APIAuditor:
     async def _fetch_initial_rate_limit(self) -> None:
         """Sync the token bucket with GitHub's actual remaining search quota."""
         try:
+            assert self.session is not None, "ClientSession not initialized; use async with"
             headers = {"Authorization": f"token {self.token}"}
             async with self.session.get(
                 "https://api.github.com/rate_limit", headers=headers
@@ -137,10 +134,12 @@ class APIAuditor:
             search = resources.get("code_search") or resources.get("search", {})
             remaining = search.get("remaining", SEARCH_QUOTA)
             reset_at = search.get("reset", 0)
-            await self.rate_limiter.update_from_headers({
-                "X-RateLimit-Remaining": str(remaining),
-                "X-RateLimit-Reset": str(reset_at),
-            })
+            await self.rate_limiter.update_from_headers(
+                {
+                    "X-RateLimit-Remaining": str(remaining),
+                    "X-RateLimit-Reset": str(reset_at),
+                }
+            )
             logger.debug(
                 "Rate-limit bucket synced: %s search requests remaining",
                 remaining,
@@ -149,8 +148,9 @@ class APIAuditor:
             logger.debug("Could not fetch initial rate limit: %s", exc)
 
     async def request_with_retry(
-        self, url: str, headers: Optional[Dict[str, str]] = None
-    ) -> Optional[Dict[str, Any]]:
+        self, url: str, headers: dict[str, str] | None = None
+    ) -> dict[str, Any] | None:
+        assert self.session is not None, "ClientSession not initialized; use async with"
         for attempt in range(self.rate_limiter.max_retries):
             try:
                 request_headers = {"Authorization": f"token {self.token}"}
@@ -166,26 +166,26 @@ class APIAuditor:
                             try:
                                 wait_time = max(1, int(retry_after))
                             except (ValueError, TypeError):
-                                wait_time = min(2 ** attempt, 300)
+                                wait_time = min(2**attempt, 300)
                         else:
-                            wait_time = min(2 ** attempt, 300)
+                            wait_time = min(2**attempt, 300)
                         logger.warning(
                             "Rate limit/auth issue for %s (status %s), waiting %ss",
-                            url, response.status, wait_time,
+                            url,
+                            response.status,
+                            wait_time,
                         )
                         await asyncio.sleep(wait_time)
                         await self.rate_limiter.update_from_headers(resp_headers)
                         continue
 
-                    await self.rate_limiter.wait_if_needed(
-                        response.status, resp_headers
-                    )
+                    await self.rate_limiter.wait_if_needed(response.status, resp_headers)
 
                     if response.status == 404:
                         return None
 
                     response.raise_for_status()
-                    return await response.json()
+                    return await response.json()  # type: ignore[no-any-return]
             except aiohttp.ClientError as exc:
                 logger.error("Request error for %s: %s", url, exc)
                 if attempt < self.rate_limiter.max_retries - 1:
@@ -194,25 +194,25 @@ class APIAuditor:
                 return None
         return None
 
-    async def discover_recent_repositories(self, days: int) -> List[str]:
+    async def discover_recent_repositories(self, days: int) -> list[str]:
         """Query GitHub search API for public repositories updated/pushed to within the last N days."""
-        from datetime import datetime, timezone, timedelta
+        from datetime import datetime, timedelta
 
         # Sync the token bucket with actual GitHub remaining quota
         await self._fetch_initial_rate_limit()
 
-        cutoff_date = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
-        
+        cutoff_date = (datetime.now(UTC) - timedelta(days=days)).strftime("%Y-%m-%d")
+
         # Build query
         q = f"pushed:>{cutoff_date}"
         if self.args.language:
             q += f" language:{self.args.language}"
         if self.args.min_stars:
             q += f" stars:>={self.args.min_stars}"
-            
+
         logger.info("Discovering public repositories with query: %s", q)
-        repos: List[str] = []
-        
+        repos: list[str] = []
+
         page = 1
         max_repos = 100  # Default safe upper bound
         while len(repos) < max_repos:
@@ -221,40 +221,38 @@ class APIAuditor:
             data = await self.request_with_retry(url)
             if not data or "items" not in data:
                 break
-            
+
             items = data["items"]
             if not items:
                 break
-                
+
             for item in items:
                 full_name = item.get("full_name")
                 if full_name:
                     repos.append(full_name)
-                    
+
             if len(items) < 100:
                 break
             page += 1
             if self.args.max_pages and page > self.args.max_pages:
                 break
-                
+
         logger.info("Discovered %s recent repositories to scan", len(repos))
         return repos[:max_repos]
 
-    async def search_github_code(
-        self, query: str, page: int = 1
-    ) -> Optional[Dict[str, Any]]:
+    async def search_github_code(self, query: str, page: int = 1) -> dict[str, Any] | None:
         from urllib.parse import quote_plus
 
         await self.rate_limiter.acquire()
 
         encoded_q = quote_plus(query)
         sort_param = f"&sort={self.args.sort}&order=desc" if self.args.sort else ""
-        url = f"https://api.github.com/search/code?q={encoded_q}&per_page=100&page={page}{sort_param}"
+        url = (
+            f"https://api.github.com/search/code?q={encoded_q}&per_page=100&page={page}{sort_param}"
+        )
         return await self.request_with_retry(url)
 
-    async def search_github_commits(
-        self, query: str, page: int = 1
-    ) -> Optional[Dict[str, Any]]:
+    async def search_github_commits(self, query: str, page: int = 1) -> dict[str, Any] | None:
         from urllib.parse import quote_plus
 
         await self.rate_limiter.acquire()
@@ -266,9 +264,7 @@ class APIAuditor:
             url, headers={"Accept": "application/vnd.github.cloak-preview+json"}
         )
 
-    async def get_file_content(
-        self, repo_full_name: str, path: str
-    ) -> Optional[str]:
+    async def get_file_content(self, repo_full_name: str, path: str) -> str | None:
         url = f"https://api.github.com/repos/{repo_full_name}/contents/{path}"
         data = await self.request_with_retry(url)
         if not data or "content" not in data:
@@ -278,7 +274,9 @@ class APIAuditor:
         except Exception as exc:
             logger.error(
                 "Failed to decode content from %s/%s: %s",
-                repo_full_name, path, exc,
+                repo_full_name,
+                path,
+                exc,
             )
             return None
 
@@ -295,7 +293,7 @@ class APIAuditor:
             return False
         return any(p.search(text) for p in self.compiled_deny)
 
-    def is_probable_secret(self, key: str, context: str) -> Tuple[bool, float]:
+    def is_probable_secret(self, key: str, context: str) -> tuple[bool, float]:
         """Return (is_likely_secret, confidence_score).
 
         Filters through deny/allow patterns, noise detection, and entropy analysis.
@@ -322,10 +320,8 @@ class APIAuditor:
         confidence = calculate_confidence_score(key, context, is_noise=False)
         return confidence >= self.args.confidence_threshold, confidence
 
-    def extract_candidates(
-        self, content: str, pattern: str
-    ) -> List[Tuple[str, str, float, str]]:
-        candidates: List[Tuple[str, str, float, str]] = []
+    def extract_candidates(self, content: str, pattern: str) -> list[tuple[str, str, float, str]]:
+        candidates: list[tuple[str, str, float, str]] = []
         for match in re.finditer(pattern, content):
             key = match.group(0)
             start = max(0, match.start() - 40)
@@ -341,7 +337,7 @@ class APIAuditor:
     # Validation
     # ------------------------------------------------------------------
     async def batch_validate_keys(
-        self, keys_data: List[Tuple[Dict[str, Any], str]], provider: str
+        self, keys_data: list[tuple[dict[str, Any], str]], provider: str
     ) -> None:
         validator = VALIDATION_MAP.get(provider)
         if not validator:
@@ -351,11 +347,10 @@ class APIAuditor:
         # Reuse a single session for all validations in this batch
         async with create_validator_session(no_ssl_verify, timeout) as session:
             tasks = [
-                validator(raw_key, timeout, no_ssl_verify, session)
-                for _, raw_key in keys_data
+                validator(raw_key, timeout, no_ssl_verify, session) for _, raw_key in keys_data
             ]
             results = await asyncio.gather(*tasks)
-            for (key_data, _), valid in zip(keys_data, results):
+            for (key_data, _), valid in zip(keys_data, results, strict=False):
                 async with self.lock:
                     key_data["valid"] = valid
                     self._record_validation(provider, valid)
@@ -363,9 +358,7 @@ class APIAuditor:
     # ------------------------------------------------------------------
     # Repo / date filtering
     # ------------------------------------------------------------------
-    def _is_recent_enough(
-        self, repo_updated_at: str = "", commit_date: str = ""
-    ) -> bool:
+    def _is_recent_enough(self, repo_updated_at: str = "", commit_date: str = "") -> bool:
         """Return True if the item is newer than the checkpoint timestamp."""
         if not self.since_dt:
             return True
@@ -374,7 +367,7 @@ class APIAuditor:
             return True
         return check_dt > self.since_dt
 
-    def filter_repo(self, item: Dict[str, Any]) -> bool:
+    def filter_repo(self, item: dict[str, Any]) -> bool:
         """Return True if the repository item passes all user-specified filters."""
         repo = item.get("repository", {})
 
@@ -396,10 +389,10 @@ class APIAuditor:
     # ------------------------------------------------------------------
     async def _run_item_loop(
         self,
-        items: List[Any],
+        items: list[Any],
         provider: str,
         pattern: str,
-        process_func: "Callable[[Any, List[Tuple[Dict[str, Any], str]]], Any]",
+        process_func: "Callable[[Any, list[tuple[dict[str, Any], str]]], Any]",
         description: str,
     ) -> None:
         """Run a generic item processing loop with concurrency, progress,
@@ -412,11 +405,11 @@ class APIAuditor:
             logger.info("[Dry run] %s items for %s", len(items), provider)
             return
 
-        keys_to_validate: List[Tuple[Dict[str, Any], str]] = []
+        keys_to_validate: list[tuple[dict[str, Any], str]] = []
 
         async def _wrapped(item: Any) -> None:
             async with self.semaphore:
-                return await process_func(item, keys_to_validate)
+                await process_func(item, keys_to_validate)
 
         tasks = [asyncio.create_task(_wrapped(item)) for item in items]
         iterator = asyncio.as_completed(tasks)
@@ -426,9 +419,7 @@ class APIAuditor:
             await coro
 
         if self.args.validate and keys_to_validate:
-            logger.info(
-                "Validating %s %s keys...", len(keys_to_validate), provider
-            )
+            logger.info("Validating %s %s keys...", len(keys_to_validate), provider)
             await self.batch_validate_keys(keys_to_validate, provider)
 
         self.progress.save_progress()
@@ -442,16 +433,14 @@ class APIAuditor:
     # ------------------------------------------------------------------
     # Scan modes
     # ------------------------------------------------------------------
-    async def audit_api_keys(
-        self, provider: str, query: str, pattern: str
-    ) -> None:
+    async def audit_api_keys(self, provider: str, query: str, pattern: str) -> None:
         """GitHub code search mode."""
         logger.info("Auditing %s API keys...", provider)
 
         # Sync rate-limit bucket with GitHub's actual remaining quota
         await self._fetch_initial_rate_limit()
 
-        all_items: List[Dict[str, Any]] = []
+        all_items: list[dict[str, Any]] = []
 
         page = 1
         while True:
@@ -464,9 +453,7 @@ class APIAuditor:
 
             filtered = [item for item in items if self.filter_repo(item)]
             all_items.extend(filtered)
-            logger.info(
-                "Fetched page %s, got %s filtered code hits", page, len(filtered)
-            )
+            logger.info("Fetched page %s, got %s filtered code hits", page, len(filtered))
 
             if len(items) < 100:
                 break
@@ -476,16 +463,14 @@ class APIAuditor:
                 break
 
         async def process_item(
-            item: Dict[str, Any],
-            keys_to_validate: List[Tuple[Dict[str, Any], str]],
+            item: dict[str, Any],
+            keys_to_validate: list[tuple[dict[str, Any], str]],
         ) -> None:
             repo = item["repository"]["full_name"]
             path = item["path"]
             identifier = f"{repo}/{path}"
 
-            if not self._is_recent_enough(
-                repo_updated_at=item["repository"].get("updated_at", "")
-            ):
+            if not self._is_recent_enough(repo_updated_at=item["repository"].get("updated_at", "")):
                 return
 
             async with self.lock:
@@ -505,14 +490,13 @@ class APIAuditor:
                     key_hash = fingerprint_key(key)
                     if self.progress.is_duplicate_hash(key_hash):
                         continue
-                    key_data: Dict[str, Any] = {
+                    key_data: dict[str, Any] = {
                         "provider": provider,
                         "key_hash": key_hash,
                         "key_masked": mask_key(key),
                         "repo": repo,
                         "path": path,
-                        "url": item.get("html_url")
-                        or f"https://github.com/{repo}/blob/{path}",
+                        "url": item.get("html_url") or f"https://github.com/{repo}/blob/{path}",
                         "timestamp": safe_utc_now(),
                         "confidence": round(confidence, 2),
                         "severity": severity,
@@ -528,20 +512,21 @@ class APIAuditor:
                     self.progress.save_progress()
 
         await self._run_item_loop(
-            all_items, provider, pattern, process_item,
+            all_items,
+            provider,
+            pattern,
+            process_item,
             description=f"Auditing {provider}",
         )
 
-    async def audit_commit_messages(
-        self, provider: str, query: str, pattern: str
-    ) -> None:
+    async def audit_commit_messages(self, provider: str, query: str, pattern: str) -> None:
         """GitHub commit-message search mode."""
         logger.info("Auditing %s API keys in commit messages...", provider)
 
         # Sync rate-limit bucket with GitHub's actual remaining quota
         await self._fetch_initial_rate_limit()
 
-        all_items: List[Dict[str, Any]] = []
+        all_items: list[dict[str, Any]] = []
 
         page = 1
         while True:
@@ -554,9 +539,7 @@ class APIAuditor:
 
             filtered = [item for item in items if self.filter_repo(item)]
             all_items.extend(filtered)
-            logger.info(
-                "Fetched page %s, got %s filtered commits", page, len(filtered)
-            )
+            logger.info("Fetched page %s, got %s filtered commits", page, len(filtered))
 
             if len(items) < 100:
                 break
@@ -566,20 +549,15 @@ class APIAuditor:
                 break
 
         async def process_commit(
-            item: Dict[str, Any],
-            keys_to_validate: List[Tuple[Dict[str, Any], str]],
+            item: dict[str, Any],
+            keys_to_validate: list[tuple[dict[str, Any], str]],
         ) -> None:
             repo = item["repository"]["full_name"]
             commit_sha = item["sha"]
             commit_msg = item.get("commit", {}).get("message", "")
-            commit_date = (
-                item.get("commit", {})
-                .get("author", {})
-                .get("date", "")
-                or item.get("commit", {})
-                .get("committer", {})
-                .get("date", "")
-            )
+            commit_date = item.get("commit", {}).get("author", {}).get("date", "") or item.get(
+                "commit", {}
+            ).get("committer", {}).get("date", "")
             identifier = f"{repo}/commit/{commit_sha}"
 
             if not self._is_recent_enough(
@@ -599,7 +577,7 @@ class APIAuditor:
                     key_hash = fingerprint_key(key)
                     if self.progress.is_duplicate_hash(key_hash):
                         continue
-                    key_data: Dict[str, Any] = {
+                    key_data: dict[str, Any] = {
                         "provider": provider,
                         "key_hash": key_hash,
                         "key_masked": mask_key(key),
@@ -623,30 +601,58 @@ class APIAuditor:
                     self.progress.save_progress()
 
         await self._run_item_loop(
-            all_items, provider, pattern, process_commit,
+            all_items,
+            provider,
+            pattern,
+            process_commit,
             description=f"Auditing {provider} commits",
         )
 
-    async def audit_local_directory(
-        self, provider: str, pattern: str, directory: str
-    ) -> None:
+    async def audit_local_directory(self, provider: str, pattern: str, directory: str) -> None:
         """Recursive local directory scan."""
-        logger.info(
-            "Auditing %s API keys in local directory: %s", provider, directory
-        )
+        logger.info("Auditing %s API keys in local directory: %s", provider, directory)
         dir_path = Path(directory)
         if not dir_path.is_dir():
             logger.error("Directory not found: %s", directory)
             return
 
         skip_extensions = {
-            ".pyc", ".pyo", ".pyd", ".so", ".dll", ".exe", ".bin",
-            ".jpg", ".jpeg", ".png", ".gif", ".ico", ".bmp", ".svg",
-            ".zip", ".tar", ".gz", ".bz2", ".7z", ".rar",
-            ".pdf", ".doc", ".docx", ".xls", ".xlsx",
-            ".mp3", ".mp4", ".avi", ".mov",
-            ".woff", ".woff2", ".ttf", ".eot",
-            ".class", ".o", ".obj",
+            ".pyc",
+            ".pyo",
+            ".pyd",
+            ".so",
+            ".dll",
+            ".exe",
+            ".bin",
+            ".jpg",
+            ".jpeg",
+            ".png",
+            ".gif",
+            ".ico",
+            ".bmp",
+            ".svg",
+            ".zip",
+            ".tar",
+            ".gz",
+            ".bz2",
+            ".7z",
+            ".rar",
+            ".pdf",
+            ".doc",
+            ".docx",
+            ".xls",
+            ".xlsx",
+            ".mp3",
+            ".mp4",
+            ".avi",
+            ".mov",
+            ".woff",
+            ".woff2",
+            ".ttf",
+            ".eot",
+            ".class",
+            ".o",
+            ".obj",
         }
 
         allowed_extensions = None
@@ -655,7 +661,7 @@ class APIAuditor:
                 f".{ext.lstrip('.')}" for ext in parse_csv_arg(self.args.extensions)
             }
 
-        all_files: List[Path] = []
+        all_files: list[Path] = []
         for file_path in dir_path.rglob("*"):
             if not file_path.is_file():
                 continue
@@ -671,7 +677,7 @@ class APIAuditor:
 
         async def process_file(
             file_path: Path,
-            keys_to_validate: List[Tuple[Dict[str, Any], str]],
+            keys_to_validate: list[tuple[dict[str, Any], str]],
         ) -> None:
             identifier = f"{provider}/{file_path}"
 
@@ -694,7 +700,7 @@ class APIAuditor:
                     key_hash = fingerprint_key(key)
                     if self.progress.is_duplicate_hash(key_hash):
                         continue
-                    key_data: Dict[str, Any] = {
+                    key_data: dict[str, Any] = {
                         "provider": provider,
                         "key_hash": key_hash,
                         "key_masked": mask_key(key),
@@ -716,17 +722,16 @@ class APIAuditor:
                     self.progress.save_progress()
 
         await self._run_item_loop(
-            all_files, provider, pattern, process_file,
+            all_files,
+            provider,
+            pattern,
+            process_file,
             description=f"Scanning {provider} (local)",
         )
 
-    async def audit_git_history(
-        self, provider: str, pattern: str, directory: str
-    ) -> None:
+    async def audit_git_history(self, provider: str, pattern: str, directory: str) -> None:
         """Scan local git commit history across all branches."""
-        logger.info(
-            "Auditing %s API keys in git history: %s", provider, directory
-        )
+        logger.info("Auditing %s API keys in git history: %s", provider, directory)
         dir_path = Path(directory).resolve()
         git_dir = dir_path / ".git"
         if not git_dir.is_dir():
@@ -736,14 +741,20 @@ class APIAuditor:
         # Gather all commits via ``git log``
         try:
             process = await asyncio.create_subprocess_exec(
-                "git", "log", "--all", "--format=%H%x00%an%x00%ae%x00%aI%x00%s", "--reverse",
+                "git",
+                "log",
+                "--all",
+                "--format=%H%x00%an%x00%ae%x00%aI%x00%s",
+                "--reverse",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(dir_path),
             )
             try:
-                stdout_bytes, stderr_bytes = await asyncio.wait_for(process.communicate(), timeout=120)
-            except asyncio.TimeoutError:
+                stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                    process.communicate(), timeout=120
+                )
+            except TimeoutError:
                 process.kill()
                 await process.communicate()
                 logger.error("git log timed out (large repository?)")
@@ -761,21 +772,23 @@ class APIAuditor:
             logger.info("No commits found in %s", directory)
             return
 
-        commits: List[Dict[str, str]] = []
+        commits: list[dict[str, str]] = []
         for line in raw_log.split("\n"):
             parts = line.split("\x00", 4)
             if len(parts) == 5:
-                commits.append({
-                    "sha": parts[0],
-                    "author": parts[1],
-                    "author_email": parts[2],
-                    "date": parts[3],
-                    "subject": parts[4],
-                })
+                commits.append(
+                    {
+                        "sha": parts[0],
+                        "author": parts[1],
+                        "author_email": parts[2],
+                        "date": parts[3],
+                        "subject": parts[4],
+                    }
+                )
 
         async def process_commit(
-            commit: Dict[str, str],
-            keys_to_validate: List[Tuple[Dict[str, Any], str]],
+            commit: dict[str, str],
+            keys_to_validate: list[tuple[dict[str, Any], str]],
         ) -> None:
             sha = commit["sha"]
             identifier = f"{provider}/git-history/{sha}"
@@ -786,14 +799,17 @@ class APIAuditor:
 
             try:
                 process = await asyncio.create_subprocess_exec(
-                    "git", "show", sha, "--format=",
+                    "git",
+                    "show",
+                    sha,
+                    "--format=",
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=str(dir_path),
                 )
                 try:
                     stdout_bytes, _ = await asyncio.wait_for(process.communicate(), timeout=30)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     process.kill()
                     await process.communicate()
                     logger.warning("git show timed out for %s", sha)
@@ -813,7 +829,7 @@ class APIAuditor:
                     key_hash = fingerprint_key(key)
                     if self.progress.is_duplicate_hash(key_hash):
                         continue
-                    key_data: Dict[str, Any] = {
+                    key_data: dict[str, Any] = {
                         "provider": provider,
                         "key_hash": key_hash,
                         "key_masked": mask_key(key),
@@ -839,6 +855,9 @@ class APIAuditor:
                     self.progress.save_progress()
 
         await self._run_item_loop(
-            commits, provider, pattern, process_commit,
+            commits,
+            provider,
+            pattern,
+            process_commit,
             description=f"Git history {provider}",
         )
