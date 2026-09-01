@@ -6,7 +6,6 @@ import io
 import json
 import logging
 from pathlib import Path
-from typing import Dict, List
 
 from auditor.tracker import ProgressTracker
 from auditor.utils import safe_utc_now
@@ -19,9 +18,7 @@ def maybe_encrypt_bytes(data: bytes, encryption_key: str) -> bytes:
     try:
         from cryptography.fernet import Fernet
     except ImportError as exc:
-        raise RuntimeError(
-            "cryptography package is required for encrypted output"
-        ) from exc
+        raise RuntimeError("cryptography package is required for encrypted output") from exc
     cipher = Fernet(encryption_key.encode("utf-8"))
     return cipher.encrypt(data)
 
@@ -49,7 +46,7 @@ def export_results(
         raw_bytes = json.dumps(payload, indent=2).encode("utf-8")
     elif output_format == "csv":
         csv_buffer = io.StringIO()
-        fieldnames = sorted({k for row in progress.found_keys for k in row.keys()})
+        fieldnames = sorted({k for row in progress.found_keys for k in row})
         writer = csv.DictWriter(csv_buffer, fieldnames=fieldnames)
         writer.writeheader()
         # Sanitize CSV injection: prefix formula characters with single quote
@@ -65,7 +62,7 @@ def export_results(
         writer.writerows(sanitized_rows)
         raw_bytes = csv_buffer.getvalue().encode("utf-8")
     elif output_format == "txt":
-        lines: List[str] = []
+        lines: list[str] = []
         for key_data in progress.found_keys:
             lines.append(f"{key_data['provider']}: {key_data.get('repo', 'N/A')}")
             if "key" in key_data:
@@ -112,9 +109,7 @@ def export_html_results(
     keys_json = keys_json.replace("</", r"<\/")
     total = len(progress.found_keys)
 
-    sev_counts: Dict[str, int] = {
-        "CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0
-    }
+    sev_counts: dict[str, int] = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
     total_confidence = 0.0
     for k in progress.found_keys:
         s = k.get("severity", "LOW")
@@ -167,19 +162,25 @@ def export_html_results(
 </head>
 <body>
 <h1>\U0001f6e1\ufe0f CredsClaw Report</h1>
-<p class="subtitle">{_html.escape(str(total))} finding(s) \\u2022 Avg confidence {_html.escape(str(avg_conf))}/100 \\u2022 Generated {_html.escape(safe_utc_now()[:10])}</p>
+<p class="subtitle">{_html.escape(str(total))} finding(s) \\u2022 Avg confidence {
+        _html.escape(str(avg_conf))
+    }/100 \\u2022 Generated {_html.escape(safe_utc_now()[:10])}</p>
 
 <div class="stats">
   <div class="stat-card"><div class="num">{total}</div><div class="label">Total Findings</div></div>
-  <div class="stat-card"><div class="num">{avg_conf}</div><div class="label">Avg Confidence</div></div>
+  <div class="stat-card"><div class="num">{
+        avg_conf
+    }</div><div class="label">Avg Confidence</div></div>
 </div>
 
 <h3 style="margin-bottom:8px">Severity Breakdown</h3>
 <div style="margin-bottom:24px">
-{"".join(
-    f'<div class="sev-row"><span class="sev-label">{sev}</span><span class="sev-count">{sev_counts[sev]}</span><div class="bar-wrapper"><div class="sev-bar {sev}" style="width:{sev_counts[sev]/max_count*100:.0f}%"></div></div></div>'
-    for sev in ["CRITICAL", "HIGH", "MEDIUM", "LOW"]
-)}
+{
+        "".join(
+            f'<div class="sev-row"><span class="sev-label">{sev}</span><span class="sev-count">{sev_counts[sev]}</span><div class="bar-wrapper"><div class="sev-bar {sev}" style="width:{sev_counts[sev] / max_count * 100:.0f}%"></div></div></div>'
+            for sev in ["CRITICAL", "HIGH", "MEDIUM", "LOW"]
+        )
+    }
 </div>
 
 <input type="text" id="filter" class="filter-input" placeholder="Filter by provider, severity, repo\\u2026" oninput="applyFilter()" />
@@ -296,6 +297,97 @@ function sortTable(col) {{
         logger.info("HTML report exported to %s", output_path)
 
 
+def _severity_to_sarif_level(severity: str) -> str:
+    """Map CredsClaw severity to SARIF level."""
+    return {
+        "CRITICAL": "error",
+        "HIGH": "error",
+        "MEDIUM": "warning",
+        "LOW": "note",
+    }.get(severity, "note")
+
+
+def export_sarif_results(
+    progress: ProgressTracker,
+    output_file: str,
+    encrypt_output: bool = False,
+    encryption_key: str = "",
+) -> None:
+    """Export findings in SARIF 2.1.0 format."""
+    if not progress.found_keys:
+        logger.info("No keys found to export as SARIF")
+        return
+
+    sarif = {
+        "version": "2.1.0",
+        "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+        "runs": [
+            {
+                "tool": {
+                    "driver": {
+                        "name": "CredsClaw",
+                        "version": "0.1.0",
+                        "informationUri": "https://github.com/tedz/credsclaw",
+                        "rules": [
+                            {
+                                "id": "exposed-secret",
+                                "name": "ExposedSecret",
+                                "shortDescription": {"text": "Exposed API key or secret detected"},
+                                "fullDescription": {
+                                    "text": "A potential API key or secret was found in the codebase."
+                                },
+                                "defaultConfiguration": {"level": "error"},
+                            }
+                        ],
+                    }
+                },
+                "results": [
+                    {
+                        "ruleId": "exposed-secret",
+                        "level": _severity_to_sarif_level(key_data.get("severity", "LOW")),
+                        "message": {
+                            "text": f"{key_data['provider']} key found in {key_data.get('path', 'unknown')}"
+                        },
+                        "locations": [
+                            {
+                                "physicalLocation": {
+                                    "artifactLocation": {
+                                        "uri": key_data.get("url", ""),
+                                    },
+                                    "region": {
+                                        "startLine": 1,
+                                    },
+                                }
+                            }
+                        ],
+                        "properties": {
+                            "provider": key_data["provider"],
+                            "confidence": key_data.get("confidence", 0),
+                            "key_hash": key_data["key_hash"],
+                            "valid": key_data.get("valid"),
+                        },
+                    }
+                    for key_data in progress.found_keys
+                ],
+            }
+        ],
+    }
+
+    raw_bytes = json.dumps(sarif, indent=2).encode("utf-8")
+    output_path = Path(output_file)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if encrypt_output:
+        if not encryption_key:
+            raise ValueError("Encryption enabled but no encryption key provided")
+        encrypted = maybe_encrypt_bytes(raw_bytes, encryption_key)
+        output_path.write_bytes(encrypted)
+        logger.info("Encrypted SARIF results exported to %s", output_path)
+    else:
+        output_path.write_bytes(raw_bytes)
+        logger.info("SARIF results exported to %s", output_path)
+
+
 def print_summary(auditor) -> None:
     """Print a summary of findings by provider, severity, and repo."""
     if not auditor.stats_by_provider:
@@ -329,16 +421,14 @@ def print_summary(auditor) -> None:
             logger.info("  %-10s: %s", sev, severity_counts[sev])
 
     avg_confidence = (
-        total_confidence / len(auditor.progress.found_keys)
-        if auditor.progress.found_keys
-        else 0
+        total_confidence / len(auditor.progress.found_keys) if auditor.progress.found_keys else 0
     )
     logger.info("  Avg confidence: %.1f/100", avg_confidence)
 
     logger.info("-" * 60)
     logger.info("Top repos by findings")
-    for repo, count in sorted(
-        auditor.stats_by_repo.items(), key=lambda kv: kv[1], reverse=True
-    )[:10]:
+    for repo, count in sorted(auditor.stats_by_repo.items(), key=lambda kv: kv[1], reverse=True)[
+        :10
+    ]:
         logger.info("%-40s %s", repo, count)
     logger.info("=" * 60)

@@ -2,7 +2,6 @@
 
 import logging
 from pathlib import Path
-from typing import Dict, List
 
 import yaml
 
@@ -10,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG_FILE = "auditor.yaml"
 
-CONFIG_ARG_MAP: Dict[str, str] = {
+CONFIG_ARG_MAP: dict[str, str] = {
     "repo": "repo",
     "dir": "dir",
     "mode": "mode",
@@ -40,9 +39,14 @@ CONFIG_ARG_MAP: Dict[str, str] = {
     "no_ssl_verify": "no_ssl_verify",
 }
 
-PLURAL_LIST_KEYS: frozenset = frozenset({
-    "providers", "allow_patterns", "deny_patterns", "extensions",
-})
+PLURAL_LIST_KEYS: frozenset = frozenset(
+    {
+        "providers",
+        "allow_patterns",
+        "deny_patterns",
+        "extensions",
+    }
+)
 
 
 def load_config(filepath: str) -> dict:
@@ -51,7 +55,7 @@ def load_config(filepath: str) -> dict:
     if not path.exists():
         return {}
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             config = yaml.safe_load(f)
         if not isinstance(config, dict):
             logger.warning("Config file has no valid top-level mapping: %s", filepath)

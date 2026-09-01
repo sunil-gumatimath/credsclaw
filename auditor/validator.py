@@ -7,7 +7,6 @@ across multiple validation calls for efficiency.
 
 import logging
 import ssl as _ssl
-from typing import Optional
 
 import aiohttp
 
@@ -25,17 +24,18 @@ def create_validator_session(
         ctx.verify_mode = _ssl.CERT_NONE
         connector_kwargs["ssl"] = ctx
     t = aiohttp.ClientTimeout(total=timeout)
-    return aiohttp.ClientSession(
-        connector=aiohttp.TCPConnector(**connector_kwargs), timeout=t
-    )
+    return aiohttp.ClientSession(connector=aiohttp.TCPConnector(**connector_kwargs), timeout=t)
 
 
 async def validate_openai_key(
-    key: str, timeout: int = 10, no_ssl_verify: bool = False,
-    session: Optional[aiohttp.ClientSession] = None,
-) -> Optional[bool]:
+    key: str,
+    timeout: int = 10,
+    no_ssl_verify: bool = False,
+    session: aiohttp.ClientSession | None = None,
+) -> bool | None:
     try:
-        async def _do(s: aiohttp.ClientSession) -> Optional[bool]:
+
+        async def _do(s: aiohttp.ClientSession) -> bool | None:
             async with s.get(
                 "https://api.openai.com/v1/models",
                 headers={"Authorization": f"Bearer {key}"},
@@ -45,6 +45,7 @@ async def validate_openai_key(
                 if response.status in (401, 403):
                     return False
                 return None
+
         if session is not None:
             return await _do(session)
         async with create_validator_session(no_ssl_verify, timeout) as s:
@@ -56,11 +57,14 @@ async def validate_openai_key(
 
 
 async def validate_anthropic_key(
-    key: str, timeout: int = 10, no_ssl_verify: bool = False,
-    session: Optional[aiohttp.ClientSession] = None,
-) -> Optional[bool]:
+    key: str,
+    timeout: int = 10,
+    no_ssl_verify: bool = False,
+    session: aiohttp.ClientSession | None = None,
+) -> bool | None:
     try:
-        async def _do(s: aiohttp.ClientSession) -> Optional[bool]:
+
+        async def _do(s: aiohttp.ClientSession) -> bool | None:
             async with s.get(
                 "https://api.anthropic.com/v1/models",
                 headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
@@ -70,6 +74,7 @@ async def validate_anthropic_key(
                 if response.status in (401, 403):
                     return False
                 return None
+
         if session is not None:
             return await _do(session)
         async with create_validator_session(no_ssl_verify, timeout) as s:
@@ -81,20 +86,25 @@ async def validate_anthropic_key(
 
 
 async def validate_google_key(
-    key: str, timeout: int = 10, no_ssl_verify: bool = False,
-    session: Optional[aiohttp.ClientSession] = None,
-) -> Optional[bool]:
+    key: str,
+    timeout: int = 10,
+    no_ssl_verify: bool = False,
+    session: aiohttp.ClientSession | None = None,
+) -> bool | None:
     # No reliable lightweight validation endpoint for Google AI keys.
     # Preserved as a stub for future implementation.
     return None
 
 
 async def validate_github_key(
-    key: str, timeout: int = 10, no_ssl_verify: bool = False,
-    session: Optional[aiohttp.ClientSession] = None,
-) -> Optional[bool]:
+    key: str,
+    timeout: int = 10,
+    no_ssl_verify: bool = False,
+    session: aiohttp.ClientSession | None = None,
+) -> bool | None:
     try:
-        async def _do(s: aiohttp.ClientSession) -> Optional[bool]:
+
+        async def _do(s: aiohttp.ClientSession) -> bool | None:
             async with s.get(
                 "https://api.github.com/user",
                 headers={
@@ -107,6 +117,7 @@ async def validate_github_key(
                 if response.status in (401, 403):
                     return False
                 return None
+
         if session is not None:
             return await _do(session)
         async with create_validator_session(no_ssl_verify, timeout) as s:
@@ -118,17 +129,21 @@ async def validate_github_key(
 
 
 async def validate_slack_key(
-    key: str, timeout: int = 10, no_ssl_verify: bool = False,
-    session: Optional[aiohttp.ClientSession] = None,
-) -> Optional[bool]:
+    key: str,
+    timeout: int = 10,
+    no_ssl_verify: bool = False,
+    session: aiohttp.ClientSession | None = None,
+) -> bool | None:
     try:
-        async def _do(s: aiohttp.ClientSession) -> Optional[bool]:
+
+        async def _do(s: aiohttp.ClientSession) -> bool | None:
             async with s.post(
                 "https://slack.com/api/auth.test",
                 headers={"Authorization": f"Bearer {key}"},
             ) as response:
                 data = await response.json()
                 return data.get("ok") is True
+
         if session is not None:
             return await _do(session)
         async with create_validator_session(no_ssl_verify, timeout) as s:
@@ -140,11 +155,14 @@ async def validate_slack_key(
 
 
 async def validate_huggingface_key(
-    key: str, timeout: int = 10, no_ssl_verify: bool = False,
-    session: Optional[aiohttp.ClientSession] = None,
-) -> Optional[bool]:
+    key: str,
+    timeout: int = 10,
+    no_ssl_verify: bool = False,
+    session: aiohttp.ClientSession | None = None,
+) -> bool | None:
     try:
-        async def _do(s: aiohttp.ClientSession) -> Optional[bool]:
+
+        async def _do(s: aiohttp.ClientSession) -> bool | None:
             async with s.get(
                 "https://huggingface.co/api/whoami-v2",
                 headers={"Authorization": f"Bearer {key}"},
@@ -154,6 +172,7 @@ async def validate_huggingface_key(
                 if response.status in (401, 403):
                     return False
                 return None
+
         if session is not None:
             return await _do(session)
         async with create_validator_session(no_ssl_verify, timeout) as s:
@@ -165,17 +184,21 @@ async def validate_huggingface_key(
 
 
 async def validate_cloudflare_key(
-    key: str, timeout: int = 10, no_ssl_verify: bool = False,
-    session: Optional[aiohttp.ClientSession] = None,
-) -> Optional[bool]:
+    key: str,
+    timeout: int = 10,
+    no_ssl_verify: bool = False,
+    session: aiohttp.ClientSession | None = None,
+) -> bool | None:
     try:
-        async def _do(s: aiohttp.ClientSession) -> Optional[bool]:
+
+        async def _do(s: aiohttp.ClientSession) -> bool | None:
             async with s.get(
                 "https://api.cloudflare.com/client/v4/user/tokens/verify",
                 headers={"Authorization": f"Bearer {key}"},
             ) as response:
                 data = await response.json()
                 return data.get("success") is True
+
         if session is not None:
             return await _do(session)
         async with create_validator_session(no_ssl_verify, timeout) as s:
@@ -187,11 +210,14 @@ async def validate_cloudflare_key(
 
 
 async def validate_replicate_key(
-    key: str, timeout: int = 10, no_ssl_verify: bool = False,
-    session: Optional[aiohttp.ClientSession] = None,
-) -> Optional[bool]:
+    key: str,
+    timeout: int = 10,
+    no_ssl_verify: bool = False,
+    session: aiohttp.ClientSession | None = None,
+) -> bool | None:
     try:
-        async def _do(s: aiohttp.ClientSession) -> Optional[bool]:
+
+        async def _do(s: aiohttp.ClientSession) -> bool | None:
             async with s.get(
                 "https://api.replicate.com/v1/account",
                 headers={"Authorization": f"Bearer {key}"},
@@ -201,6 +227,7 @@ async def validate_replicate_key(
                 if response.status in (401, 403):
                     return False
                 return None
+
         if session is not None:
             return await _do(session)
         async with create_validator_session(no_ssl_verify, timeout) as s:
@@ -212,11 +239,14 @@ async def validate_replicate_key(
 
 
 async def validate_groq_key(
-    key: str, timeout: int = 10, no_ssl_verify: bool = False,
-    session: Optional[aiohttp.ClientSession] = None,
-) -> Optional[bool]:
+    key: str,
+    timeout: int = 10,
+    no_ssl_verify: bool = False,
+    session: aiohttp.ClientSession | None = None,
+) -> bool | None:
     try:
-        async def _do(s: aiohttp.ClientSession) -> Optional[bool]:
+
+        async def _do(s: aiohttp.ClientSession) -> bool | None:
             async with s.get(
                 "https://api.groq.com/v1/models",
                 headers={"Authorization": f"Bearer {key}"},
@@ -226,6 +256,7 @@ async def validate_groq_key(
                 if response.status in (401, 403):
                     return False
                 return None
+
         if session is not None:
             return await _do(session)
         async with create_validator_session(no_ssl_verify, timeout) as s:
@@ -237,11 +268,14 @@ async def validate_groq_key(
 
 
 async def validate_openrouter_key(
-    key: str, timeout: int = 10, no_ssl_verify: bool = False,
-    session: Optional[aiohttp.ClientSession] = None,
-) -> Optional[bool]:
+    key: str,
+    timeout: int = 10,
+    no_ssl_verify: bool = False,
+    session: aiohttp.ClientSession | None = None,
+) -> bool | None:
     try:
-        async def _do(s: aiohttp.ClientSession) -> Optional[bool]:
+
+        async def _do(s: aiohttp.ClientSession) -> bool | None:
             async with s.get(
                 "https://openrouter.ai/api/v1/auth/key",
                 headers={"Authorization": f"Bearer {key}"},
@@ -251,6 +285,7 @@ async def validate_openrouter_key(
                 if response.status in (401, 403):
                     return False
                 return None
+
         if session is not None:
             return await _do(session)
         async with create_validator_session(no_ssl_verify, timeout) as s:
@@ -262,11 +297,14 @@ async def validate_openrouter_key(
 
 
 async def validate_together_key(
-    key: str, timeout: int = 10, no_ssl_verify: bool = False,
-    session: Optional[aiohttp.ClientSession] = None,
-) -> Optional[bool]:
+    key: str,
+    timeout: int = 10,
+    no_ssl_verify: bool = False,
+    session: aiohttp.ClientSession | None = None,
+) -> bool | None:
     try:
-        async def _do(s: aiohttp.ClientSession) -> Optional[bool]:
+
+        async def _do(s: aiohttp.ClientSession) -> bool | None:
             async with s.get(
                 "https://api.together.xyz/v1/models",
                 headers={"Authorization": f"Bearer {key}"},
@@ -276,6 +314,7 @@ async def validate_together_key(
                 if response.status in (401, 403):
                     return False
                 return None
+
         if session is not None:
             return await _do(session)
         async with create_validator_session(no_ssl_verify, timeout) as s:
@@ -287,11 +326,14 @@ async def validate_together_key(
 
 
 async def validate_mistral_key(
-    key: str, timeout: int = 10, no_ssl_verify: bool = False,
-    session: Optional[aiohttp.ClientSession] = None,
-) -> Optional[bool]:
+    key: str,
+    timeout: int = 10,
+    no_ssl_verify: bool = False,
+    session: aiohttp.ClientSession | None = None,
+) -> bool | None:
     try:
-        async def _do(s: aiohttp.ClientSession) -> Optional[bool]:
+
+        async def _do(s: aiohttp.ClientSession) -> bool | None:
             async with s.get(
                 "https://api.mistral.ai/v1/models",
                 headers={"Authorization": f"Bearer {key}"},
@@ -301,6 +343,7 @@ async def validate_mistral_key(
                 if response.status in (401, 403):
                     return False
                 return None
+
         if session is not None:
             return await _do(session)
         async with create_validator_session(no_ssl_verify, timeout) as s:
@@ -312,18 +355,22 @@ async def validate_mistral_key(
 
 
 async def validate_aws_key(
-    key: str, timeout: int = 10, no_ssl_verify: bool = False,
-    session: Optional[aiohttp.ClientSession] = None,
-) -> Optional[bool]:
+    key: str,
+    timeout: int = 10,
+    no_ssl_verify: bool = False,
+    session: aiohttp.ClientSession | None = None,
+) -> bool | None:
     # AWS keys require both Access Key ID AND Secret Access Key.
     # Preserved as a stub for future implementation.
     return None
 
 
 async def validate_azure_key(
-    key: str, timeout: int = 10, no_ssl_verify: bool = False,
-    session: Optional[aiohttp.ClientSession] = None,
-) -> Optional[bool]:
+    key: str,
+    timeout: int = 10,
+    no_ssl_verify: bool = False,
+    session: aiohttp.ClientSession | None = None,
+) -> bool | None:
     # Azure connection strings require SDK-based validation.
     # Preserved as a stub for future implementation.
     return None

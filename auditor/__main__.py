@@ -9,16 +9,20 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-
 load_dotenv()
 
+from auditor.cli import generate_pre_commit_config, get_github_token, parse_args, parse_csv_arg
 from auditor.config import load_config
-from auditor.cli import parse_args, parse_csv_arg, get_github_token, generate_pre_commit_config
+from auditor.exporter import (
+    export_html_results,
+    export_results,
+    export_sarif_results,
+    print_summary,
+)
 from auditor.patterns import PROVIDER_CONFIGS
 from auditor.rate_limiter import RateLimiter
-from auditor.tracker import ProgressTracker
 from auditor.scanner import APIAuditor
-from auditor.exporter import export_results, export_html_results, print_summary
+from auditor.tracker import ProgressTracker
 
 logger = logging.getLogger("auditor")
 
@@ -30,9 +34,7 @@ def _setup_file_logging() -> None:
     log_path = log_dir / "audit.log"
 
     file_handler = logging.FileHandler(str(log_path))
-    file_handler.setFormatter(
-        logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
-    )
+    file_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
     # Avoid duplicate handlers if called more than once
     auditor_logger = logging.getLogger("auditor")
     existing = {type(h).__name__ for h in auditor_logger.handlers}
@@ -90,9 +92,7 @@ async def main() -> None:
             logger.warning("Removing existing checkpoint file: %s", args.checkpoint_file)
             Path(args.checkpoint_file).unlink()
 
-        progress = ProgressTracker(
-            args.checkpoint_file, store_raw_keys=args.store_raw_keys
-        )
+        progress = ProgressTracker(args.checkpoint_file, store_raw_keys=args.store_raw_keys)
         rate_limiter = RateLimiter()
 
         selected = [p.strip().lower() for p in args.providers.split(",") if p.strip()]
@@ -104,9 +104,13 @@ async def main() -> None:
             # If recent_repos_days is set, discover repositories first
             discovered_repos = []
             if args.recent_repos_days is not None:
-                discovered_repos = await auditor.discover_recent_repositories(args.recent_repos_days)
+                discovered_repos = await auditor.discover_recent_repositories(
+                    args.recent_repos_days
+                )
                 if not discovered_repos:
-                    logger.warning("No recently updated repositories found matching criteria. Exiting.")
+                    logger.warning(
+                        "No recently updated repositories found matching criteria. Exiting."
+                    )
                     return
 
             # Generate suffix list
@@ -163,17 +167,11 @@ async def main() -> None:
                     elif args.mode == "git-history":
                         if not args.dir:
                             raise ValueError("--dir is required for git-history mode")
-                        provider_tasks.append(
-                            auditor.audit_git_history(name, pattern, args.dir)
-                        )
+                        provider_tasks.append(auditor.audit_git_history(name, pattern, args.dir))
                     elif args.mode == "commits":
-                        provider_tasks.append(
-                            auditor.audit_commit_messages(name, query, pattern)
-                        )
+                        provider_tasks.append(auditor.audit_commit_messages(name, query, pattern))
                     else:
-                        provider_tasks.append(
-                            auditor.audit_api_keys(name, query, pattern)
-                        )
+                        provider_tasks.append(auditor.audit_api_keys(name, query, pattern))
 
             if provider_tasks:
                 results = await asyncio.gather(*provider_tasks, return_exceptions=True)
@@ -182,11 +180,16 @@ async def main() -> None:
                         logger.error("Provider task failed: %s", result, exc_info=result)
 
             if not args.dry_run:
-                encryption_key = args.encryption_key or os.getenv(
-                    "OUTPUT_ENCRYPTION_KEY", ""
-                )
+                encryption_key = args.encryption_key or os.getenv("OUTPUT_ENCRYPTION_KEY", "")
                 if args.output_format == "html":
                     export_html_results(
+                        progress,
+                        args.output_file,
+                        encrypt_output=args.encrypt_output,
+                        encryption_key=encryption_key,
+                    )
+                elif args.output_format == "sarif":
+                    export_sarif_results(
                         progress,
                         args.output_file,
                         encrypt_output=args.encrypt_output,

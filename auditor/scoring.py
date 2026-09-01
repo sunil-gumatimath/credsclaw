@@ -3,16 +3,13 @@
 import hashlib
 import math
 import re
-from typing import Dict
-
-from auditor.patterns import NOISE_SUBSTRINGS
 
 
 def shannon_entropy(value: str) -> float:
     """Calculate Shannon entropy of a string (higher = more random)."""
     if not value:
         return 0.0
-    counts: Dict[str, int] = {}
+    counts: dict[str, int] = {}
     for ch in value:
         counts[ch] = counts.get(ch, 0) + 1
     entropy = 0.0
@@ -56,9 +53,7 @@ def calculate_confidence_score(key: str, context: str, is_noise: bool) -> float:
         r"apikey",
     ]
     context_lower = context.lower()
-    context_matches = sum(
-        1 for pattern in secret_indicators if re.search(pattern, context_lower)
-    )
+    context_matches = sum(1 for pattern in secret_indicators if re.search(pattern, context_lower))
     context_score = min(context_matches / 2.0, 1.0) * 25.0
 
     # Noise filter penalty (0-20 points — zero if noisy, 20 if clean)
