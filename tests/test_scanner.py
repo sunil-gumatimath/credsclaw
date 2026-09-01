@@ -3,19 +3,17 @@
 import argparse
 import asyncio
 import logging
-import os
 import subprocess
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from auditor import (
+    OPENAI_KEY_PATTERN,
     APIAuditor,
     ProgressTracker,
     RateLimiter,
     calculate_confidence_score,
-    OPENAI_KEY_PATTERN,
 )
 
 
@@ -89,7 +87,9 @@ def test_confidence_threshold_filtering(tmp_path):
         assert is_probable is False
 
     args2 = _build_args(confidence_threshold=20.0)
-    tracker2 = ProgressTracker(checkpoint_file=str(tmp_path / "progress2.json"), store_raw_keys=False)
+    tracker2 = ProgressTracker(
+        checkpoint_file=str(tmp_path / "progress2.json"), store_raw_keys=False
+    )
     auditor2 = APIAuditor("fake-token", RateLimiter(), tracker2, args2)
     is_probable2, _ = auditor2.is_probable_secret(key, context)
     assert is_probable2 is True
@@ -101,10 +101,11 @@ async def test_local_scan_logic(tmp_path):
     args = _build_args(dry_run=False, dir=str(tmp_path))
     env_file = tmp_path / ".env"
     import string
+
     valid_chars = string.ascii_letters + string.digits
     high_entropy_key = "sk-" + "".join(valid_chars[(i * 17) % len(valid_chars)] for i in range(48))
     env_file.write_text(f"OPENAI_API_KEY={high_entropy_key}", encoding="utf-8")
-    
+
     tracker = ProgressTracker(checkpoint_file=str(tmp_path / "progress.json"), store_raw_keys=False)
     auditor = APIAuditor("fake", RateLimiter(), tracker, args)
     await auditor.audit_local_directory("OpenAI", OPENAI_KEY_PATTERN, str(tmp_path))
@@ -112,14 +113,13 @@ async def test_local_scan_logic(tmp_path):
     assert tracker.found_keys[0]["provider"] == "OpenAI"
 
 
-
-
-
 # ~~~ Git history ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 def test_audit_git_history_not_a_repo(tmp_path, caplog):
     caplog.set_level(logging.ERROR)
     args = _build_args()
-    tracker = ProgressTracker(checkpoint_file=str(tmp_path / "checkpoint.json"), store_raw_keys=False)
+    tracker = ProgressTracker(
+        checkpoint_file=str(tmp_path / "checkpoint.json"), store_raw_keys=False
+    )
     auditor = APIAuditor("fake", RateLimiter(), tracker, args)
     asyncio.run(auditor.audit_git_history("OpenAI", r"sk-\w+", str(tmp_path)))
     assert any("Not a git repository" in msg for msg in caplog.messages)
@@ -130,18 +130,25 @@ def test_audit_git_history_dry_run(tmp_path, caplog):
 
     # Init a real git repo
     subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
-    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@test.com"], cwd=str(tmp_path), capture_output=True
+    )
     subprocess.run(["git", "config", "user.name", "Test"], cwd=str(tmp_path), capture_output=True)
     env_file = tmp_path / ".env"
     import string
+
     valid_chars = string.ascii_letters + string.digits
     high_entropy_key = "sk-" + "".join(valid_chars[(i * 17) % len(valid_chars)] for i in range(48))
     env_file.write_text(f"OPENAI_API_KEY={high_entropy_key}", encoding="utf-8")
     subprocess.run(["git", "add", "."], cwd=str(tmp_path), capture_output=True)
-    subprocess.run(["git", "commit", "-m", "feat: add api key"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "feat: add api key"], cwd=str(tmp_path), capture_output=True
+    )
 
     args = _build_args(dry_run=True)
-    tracker = ProgressTracker(checkpoint_file=str(tmp_path / "checkpoint.json"), store_raw_keys=False)
+    tracker = ProgressTracker(
+        checkpoint_file=str(tmp_path / "checkpoint.json"), store_raw_keys=False
+    )
     auditor = APIAuditor("", RateLimiter(), tracker, args)
     asyncio.run(auditor.audit_git_history("OpenAI", OPENAI_KEY_PATTERN, str(tmp_path)))
 
@@ -150,20 +157,27 @@ def test_audit_git_history_dry_run(tmp_path, caplog):
 
 def test_audit_git_history_with_actual_repo(tmp_path):
     import string
+
     valid_chars = string.ascii_letters + string.digits
     high_entropy_key = "sk-" + "".join(valid_chars[(i * 17) % len(valid_chars)] for i in range(48))
 
     # Init git repo with a commit containing a fake key
     subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
-    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@test.com"], cwd=str(tmp_path), capture_output=True
+    )
     subprocess.run(["git", "config", "user.name", "Test"], cwd=str(tmp_path), capture_output=True)
     env_file = tmp_path / ".env"
     env_file.write_text(f"OPENAI_API_KEY={high_entropy_key}", encoding="utf-8")
     subprocess.run(["git", "add", "."], cwd=str(tmp_path), capture_output=True)
-    subprocess.run(["git", "commit", "-m", "feat: add api key"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "feat: add api key"], cwd=str(tmp_path), capture_output=True
+    )
 
     args = _build_args(dry_run=False)
-    tracker = ProgressTracker(checkpoint_file=str(tmp_path / "checkpoint.json"), store_raw_keys=False)
+    tracker = ProgressTracker(
+        checkpoint_file=str(tmp_path / "checkpoint.json"), store_raw_keys=False
+    )
     auditor = APIAuditor("", RateLimiter(), tracker, args)
     asyncio.run(auditor.audit_git_history("OpenAI", OPENAI_KEY_PATTERN, str(tmp_path)))
 
@@ -175,7 +189,9 @@ def test_audit_git_history_with_actual_repo(tmp_path):
 @pytest.mark.asyncio
 async def test_discover_recent_repositories_success(tmp_path):
     args = _build_args(language="python", min_stars=50)
-    tracker = ProgressTracker(checkpoint_file=str(tmp_path / "checkpoint.json"), store_raw_keys=False)
+    tracker = ProgressTracker(
+        checkpoint_file=str(tmp_path / "checkpoint.json"), store_raw_keys=False
+    )
     auditor = APIAuditor("fake-token", RateLimiter(), tracker, args)
 
     mock_data = {
@@ -194,6 +210,7 @@ async def test_discover_recent_repositories_success(tmp_path):
         assert "language:python" in called_url
         assert "stars:>=50" in called_url
 
+
 @pytest.mark.asyncio
 async def test_no_ssl_verify_creates_permissive_context():
     args = _build_args(no_ssl_verify=True)
@@ -203,6 +220,7 @@ async def test_no_ssl_verify_creates_permissive_context():
         # Check connector inside session
         assert hasattr(auditor.session.connector, "_ssl")
 
+
 @pytest.mark.asyncio
 async def test_session_no_default_auth_header():
     args = _build_args()
@@ -211,13 +229,15 @@ async def test_session_no_default_auth_header():
     async with auditor:
         assert "Authorization" not in auditor.session.headers
 
+
 @pytest.mark.asyncio
 async def test_retry_after_integer_header():
     rl = RateLimiter()
     await rl.wait_if_needed(429, {"Retry-After": "5"})
     # It would have slept 5s, but we're not mocking sleep here so just verifying it doesn't crash
     # If we really wanted to verify, we'd mock asyncio.sleep.
-    
+
+
 @pytest.mark.asyncio
 async def test_provider_found_count_tracks_per_session():
     args = _build_args()

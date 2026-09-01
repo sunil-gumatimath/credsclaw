@@ -4,35 +4,39 @@ import os
 from pathlib import Path
 
 from auditor import (
+    ProgressTracker,
     export_html_results,
     fingerprint_key,
     mask_key,
-    ProgressTracker,
 )
 
 
 def _make_progress_with_keys(store_raw_keys=False):
     """Helper: create a ProgressTracker with sample findings."""
     tracker = ProgressTracker(checkpoint_file="", store_raw_keys=store_raw_keys)
-    for i, (provider, sev, conf) in enumerate([
-        ("OpenAI", "CRITICAL", 92.5),
-        ("GitHub", "HIGH", 74.0),
-        ("Cloudflare", "MEDIUM", 55.3),
-    ]):
+    for i, (provider, sev, conf) in enumerate(
+        [
+            ("OpenAI", "CRITICAL", 92.5),
+            ("GitHub", "HIGH", 74.0),
+            ("Cloudflare", "MEDIUM", 55.3),
+        ]
+    ):
         key = f"sk-test-key-{i}-" + "a" * 30
         key_hash = fingerprint_key(key)
-        tracker.add_key({
-            "provider": provider,
-            "key_hash": key_hash,
-            "key_masked": mask_key(key),
-            "repo": f"owner/repo{i}",
-            "path": f".env.{i}",
-            "url": f"https://github.com/owner/repo{i}/blob/.env.{i}",
-            "timestamp": "2026-01-01T00:00:00",
-            "confidence": conf,
-            "severity": sev,
-            "valid": None,
-        })
+        tracker.add_key(
+            {
+                "provider": provider,
+                "key_hash": key_hash,
+                "key_masked": mask_key(key),
+                "repo": f"owner/repo{i}",
+                "path": f".env.{i}",
+                "url": f"https://github.com/owner/repo{i}/blob/.env.{i}",
+                "timestamp": "2026-01-01T00:00:00",
+                "confidence": conf,
+                "severity": sev,
+                "valid": None,
+            }
+        )
     return tracker
 
 

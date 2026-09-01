@@ -121,56 +121,62 @@ def export_sarif_results(
     sarif = {
         "version": "2.1.0",
         "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
-        "runs": [{
-            "tool": {
-                "driver": {
-                    "name": "CredsClaw",
-                    "version": "0.1.0",
-                    "informationUri": "https://github.com/tedz/credsclaw",
-                    "rules": [
-                        {
-                            "id": "exposed-secret",
-                            "name": "ExposedSecret",
-                            "shortDescription": {"text": "Exposed API key or secret detected"},
-                            "fullDescription": {"text": "A potential API key or secret was found in the codebase."},
-                            "defaultConfiguration": {"level": "error"},
-                        }
-                    ],
-                }
-            },
-            "results": [
-                {
-                    "ruleId": "exposed-secret",
-                    "level": _severity_to_sarif_level(key_data.get("severity", "LOW")),
-                    "message": {
-                        "text": f"{key_data['provider']} key found in {key_data.get('path', 'unknown')}"
-                    },
-                    "locations": [{
-                        "physicalLocation": {
-                            "artifactLocation": {
-                                "uri": key_data.get("url", ""),
-                            },
-                            "region": {
-                                "startLine": 1,
-                            },
-                        }
-                    }],
-                    "properties": {
-                        "provider": key_data["provider"],
-                        "confidence": key_data.get("confidence", 0),
-                        "key_hash": key_data["key_hash"],
-                        "valid": key_data.get("valid"),
-                    },
-                }
-                for key_data in progress.found_keys
-            ],
-        }]
+        "runs": [
+            {
+                "tool": {
+                    "driver": {
+                        "name": "CredsClaw",
+                        "version": "0.1.0",
+                        "informationUri": "https://github.com/tedz/credsclaw",
+                        "rules": [
+                            {
+                                "id": "exposed-secret",
+                                "name": "ExposedSecret",
+                                "shortDescription": {"text": "Exposed API key or secret detected"},
+                                "fullDescription": {
+                                    "text": "A potential API key or secret was found in the codebase."
+                                },
+                                "defaultConfiguration": {"level": "error"},
+                            }
+                        ],
+                    }
+                },
+                "results": [
+                    {
+                        "ruleId": "exposed-secret",
+                        "level": _severity_to_sarif_level(key_data.get("severity", "LOW")),
+                        "message": {
+                            "text": f"{key_data['provider']} key found in {key_data.get('path', 'unknown')}"
+                        },
+                        "locations": [
+                            {
+                                "physicalLocation": {
+                                    "artifactLocation": {
+                                        "uri": key_data.get("url", ""),
+                                    },
+                                    "region": {
+                                        "startLine": 1,
+                                    },
+                                }
+                            }
+                        ],
+                        "properties": {
+                            "provider": key_data["provider"],
+                            "confidence": key_data.get("confidence", 0),
+                            "key_hash": key_data["key_hash"],
+                            "valid": key_data.get("valid"),
+                        },
+                    }
+                    for key_data in progress.found_keys
+                ],
+            }
+        ],
     }
-    
+
     raw_bytes = json.dumps(sarif, indent=2).encode("utf-8")
     output_path = Path(output_file)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    
+
     if encrypt_output:
         if not encryption_key:
             raise ValueError("Encryption enabled but no encryption key provided")
@@ -178,6 +184,7 @@ def export_sarif_results(
         output_path.write_bytes(encrypted)
     else:
         output_path.write_bytes(raw_bytes)
+
 
 def _severity_to_sarif_level(severity: str) -> str:
     """Map CredsClaw severity to SARIF level."""
@@ -193,7 +200,8 @@ def _severity_to_sarif_level(severity: str) -> str:
 Add `sarif` to `--output-format` choices:
 ```python
 out.add_argument(
-    "--output-format", type=str, 
+    "--output-format",
+    type=str,
     choices=["json", "csv", "txt", "html", "sarif"],
     default="json",
 )
@@ -330,12 +338,12 @@ Add two new CLI flags:
 sec.add_argument(
     "--redact-paths",
     action="store_true",
-    help="Replace absolute paths with relative paths in output and logs"
+    help="Replace absolute paths with relative paths in output and logs",
 )
 sec.add_argument(
     "--redact-repo-names",
     action="store_true",
-    help="Replace repository names with anonymized identifiers (repo-1, repo-2)"
+    help="Replace repository names with anonymized identifiers (repo-1, repo-2)",
 )
 ```
 
@@ -347,40 +355,41 @@ import os
 import re
 from pathlib import Path
 
+
 class PathRedactor:
     """Redact sensitive paths and repository names."""
-    
+
     def __init__(self, redact_paths: bool = False, redact_repos: bool = False):
         self.redact_paths = redact_paths
         self.redact_repos = redact_repos
         self._repo_map: Dict[str, str] = {}
         self._repo_counter = 0
-    
+
     def redact_path(self, path: str) -> str:
         """Replace absolute paths with relative or anonymized paths."""
         if not self.redact_paths:
             return path
-        
+
         # Replace home directory with ~
         home = str(Path.home())
         if path.startswith(home):
             path = path.replace(home, "~", 1)
-        
+
         # Replace common user directory patterns
-        path = re.sub(r'/home/[^/]+/', '/~/', path)
-        path = re.sub(r'C:\\Users\\[^\\]+\\', 'C:\\Users\\~\\', path)
-        
+        path = re.sub(r"/home/[^/]+/", "/~/", path)
+        path = re.sub(r"C:\\Users\\[^\\]+\\", "C:\\Users\\~\\", path)
+
         return path
-    
+
     def redact_repo(self, repo: str) -> str:
         """Replace repository names with anonymized identifiers."""
         if not self.redact_repos:
             return repo
-        
+
         if repo not in self._repo_map:
             self._repo_counter += 1
             self._repo_map[repo] = f"repo-{self._repo_counter}"
-        
+
         return self._repo_map[repo]
 ```
 
@@ -440,13 +449,11 @@ FILE_TYPE_WEIGHTS = {
     "config.yml": 1.3,
     "settings.py": 1.2,
     "secrets.json": 1.5,
-    
     # Medium-risk
     ".py": 1.0,
     ".js": 1.0,
     ".ts": 1.0,
     ".sh": 1.0,
-    
     # Low-risk (documentation, tests)
     ".md": 0.7,
     ".rst": 0.7,
@@ -457,37 +464,39 @@ FILE_TYPE_WEIGHTS = {
     "*.spec.js": 0.5,
 }
 
+
 def get_file_weight(filename: str) -> float:
     """Return confidence weight based on file type."""
     filename_lower = filename.lower()
-    
+
     # Check exact matches first
     if filename_lower in FILE_TYPE_WEIGHTS:
         return FILE_TYPE_WEIGHTS[filename_lower]
-    
+
     # Check extension
     ext = Path(filename).suffix.lower()
     if ext in FILE_TYPE_WEIGHTS:
         return FILE_TYPE_WEIGHTS[ext]
-    
+
     # Check patterns
     if "test" in filename_lower or "spec" in filename_lower:
         return 0.5
-    
+
     return 1.0  # Default weight
+
 
 def calculate_age_factor(commit_date: str) -> float:
     """Reduce confidence for old commits (keys more likely rotated)."""
     if not commit_date:
         return 1.0
-    
+
     try:
         commit_dt = parse_iso8601(commit_date)
         if not commit_dt:
             return 1.0
-        
+
         age_days = (datetime.now(timezone.utc) - commit_dt).days
-        
+
         if age_days > 365:
             return 0.6  # Very old — likely rotated
         elif age_days > 180:
@@ -501,6 +510,7 @@ def calculate_age_factor(commit_date: str) -> float:
     except Exception:
         return 1.0
 
+
 def calculate_confidence_score(
     key: str,
     context: str,
@@ -510,21 +520,18 @@ def calculate_confidence_score(
 ) -> float:
     """Calculate confidence score with adaptive weighting."""
     # ... existing calculation ...
-    
+
     # Apply file-type weight
     file_weight = get_file_weight(filename) if filename else 1.0
-    
+
     # Apply age factor
     age_factor = calculate_age_factor(commit_date)
-    
-    score = (
-        entropy_score + context_score + noise_score + 
-        length_score + diversity_score
-    )
-    
+
+    score = entropy_score + context_score + noise_score + length_score + diversity_score
+
     # Apply adaptive factors
     score = score * file_weight * age_factor
-    
+
     return min(max(score, 0.0), 100.0)
 ```
 
@@ -533,7 +540,9 @@ Pass `filename` and `commit_date` to `calculate_confidence_score`:
 
 ```python
 # auditor/scanner.py
-def is_probable_secret(self, key: str, context: str, filename: str = "", commit_date: str = "") -> Tuple[bool, float]:
+def is_probable_secret(
+    self, key: str, context: str, filename: str = "", commit_date: str = ""
+) -> Tuple[bool, float]:
     # ...
     confidence = calculate_confidence_score(
         key, context, is_noise, filename=filename, commit_date=commit_date
@@ -593,14 +602,15 @@ custom_providers:
 from typing import Dict, List, Optional
 import yaml
 
+
 class CustomProvider:
     """User-defined provider from YAML config."""
-    
+
     def __init__(self, config: dict):
         self.name: str = config["name"]
         self.search_term: str = config.get("search_term", "")
         self.pattern: str = config["pattern"]
-        
+
         # Validation config (optional)
         validation = config.get("validation", {})
         self.validation_url: Optional[str] = validation.get("url")
@@ -608,9 +618,10 @@ class CustomProvider:
         self.validation_headers: Dict[str, str] = validation.get("headers", {})
         self.success_status: int = validation.get("success_status", 200)
         self.failure_status: List[int] = validation.get("failure_status", [401, 403])
-    
+
     def has_validation(self) -> bool:
         return bool(self.validation_url)
+
 
 def load_custom_providers(config: dict) -> Dict[str, CustomProvider]:
     """Load custom providers from YAML config."""
@@ -630,14 +641,11 @@ async def validate_custom_key(
     """Validate a key against a custom provider endpoint."""
     if not provider.has_validation():
         return None
-    
+
     try:
         # Build headers with {key} substitution
-        headers = {
-            k: v.replace("{key}", key) 
-            for k, v in provider.validation_headers.items()
-        }
-        
+        headers = {k: v.replace("{key}", key) for k, v in provider.validation_headers.items()}
+
         async def _do(s: aiohttp.ClientSession) -> Optional[bool]:
             method = provider.validation_method.upper()
             if method == "GET":
@@ -649,13 +657,13 @@ async def validate_custom_key(
             else:
                 logger.warning("Unsupported validation method: %s", method)
                 return None
-            
+
             if resp.status == provider.success_status:
                 return True
             if resp.status in provider.failure_status:
                 return False
             return None
-        
+
         if session is not None:
             return await _do(session)
         async with create_validator_session(no_ssl_verify, timeout) as s:
@@ -673,8 +681,9 @@ custom_providers = load_custom_providers(config)
 for name, custom in custom_providers.items():
     PROVIDER_CONFIGS[name] = (custom.name, custom.search_term, custom.pattern)
     if custom.has_validation():
-        VALIDATION_MAP[name] = lambda key, timeout, no_ssl_verify, session, p=custom: \
+        VALIDATION_MAP[name] = lambda key, timeout, no_ssl_verify, session, p=custom: (
             validate_custom_key(key, p, timeout, no_ssl_verify, session)
+        )
 ```
 
 **Testing:**
@@ -714,9 +723,10 @@ from typing import List, Dict, Any
 
 logger = logging.getLogger(__name__)
 
+
 class WebhookNotifier:
     """Send scan results to external webhooks."""
-    
+
     def __init__(
         self,
         slack_webhook: str = "",
@@ -726,7 +736,7 @@ class WebhookNotifier:
         self.slack_webhook = slack_webhook
         self.discord_webhook = discord_webhook
         self.generic_webhook = generic_webhook
-    
+
     async def notify(self, findings: List[Dict[str, Any]], scan_metadata: Dict[str, Any]) -> None:
         """Send notifications to all configured webhooks."""
         if self.slack_webhook:
@@ -735,11 +745,11 @@ class WebhookNotifier:
             await self._notify_discord(findings, scan_metadata)
         if self.generic_webhook:
             await self._notify_generic(findings, scan_metadata)
-    
+
     async def _notify_slack(self, findings: List[Dict], metadata: Dict) -> None:
         """Send Slack webhook notification."""
         severity_counts = self._count_severities(findings)
-        
+
         payload = {
             "text": f"🔒 CredsClaw Scan Complete",
             "attachments": [
@@ -754,23 +764,25 @@ class WebhookNotifier:
                     ],
                     "footer": f"Scan mode: {metadata.get('mode', 'unknown')} | Providers: {metadata.get('providers', 'unknown')}",
                 }
-            ]
+            ],
         }
-        
+
         # Add top 5 findings as additional attachments
         for finding in findings[:5]:
-            payload["attachments"].append({
-                "color": "warning",
-                "title": f"{finding['provider']} key in {finding.get('repo', 'unknown')}",
-                "text": f"File: {finding.get('path', 'unknown')}\nConfidence: {finding.get('confidence', 0)}",
-            })
-        
+            payload["attachments"].append(
+                {
+                    "color": "warning",
+                    "title": f"{finding['provider']} key in {finding.get('repo', 'unknown')}",
+                    "text": f"File: {finding.get('path', 'unknown')}\nConfidence: {finding.get('confidence', 0)}",
+                }
+            )
+
         await self._post_webhook(self.slack_webhook, payload)
-    
+
     async def _notify_discord(self, findings: List[Dict], metadata: Dict) -> None:
         """Send Discord webhook notification."""
         severity_counts = self._count_severities(findings)
-        
+
         payload = {
             "content": f"🔒 **CredsClaw Scan Complete**\nFound **{len(findings)}** potential secrets",
             "embeds": [
@@ -778,17 +790,21 @@ class WebhookNotifier:
                     "title": "Severity Breakdown",
                     "color": 0xFF0000 if severity_counts["CRITICAL"] > 0 else 0xFFA500,
                     "fields": [
-                        {"name": "Critical", "value": str(severity_counts["CRITICAL"]), "inline": True},
+                        {
+                            "name": "Critical",
+                            "value": str(severity_counts["CRITICAL"]),
+                            "inline": True,
+                        },
                         {"name": "High", "value": str(severity_counts["HIGH"]), "inline": True},
                         {"name": "Medium", "value": str(severity_counts["MEDIUM"]), "inline": True},
                         {"name": "Low", "value": str(severity_counts["LOW"]), "inline": True},
                     ],
                 }
-            ]
+            ],
         }
-        
+
         await self._post_webhook(self.discord_webhook, payload)
-    
+
     async def _notify_generic(self, findings: List[Dict], metadata: Dict) -> None:
         """Send generic JSON webhook."""
         payload = {
@@ -796,7 +812,7 @@ class WebhookNotifier:
             "findings": findings,
         }
         await self._post_webhook(self.generic_webhook, payload)
-    
+
     async def _post_webhook(self, url: str, payload: Dict) -> None:
         """Post payload to webhook URL."""
         try:
@@ -806,7 +822,7 @@ class WebhookNotifier:
                         logger.warning("Webhook POST failed with status %s", resp.status)
         except Exception as exc:
             logger.error("Webhook notification failed: %s", exc)
-    
+
     def _count_severities(self, findings: List[Dict]) -> Dict[str, int]:
         counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
         for f in findings:
@@ -866,13 +882,14 @@ import aiohttp
 
 logger = logging.getLogger(__name__)
 
+
 class RemediationPR:
     """Create GitHub PRs to remediate exposed secrets."""
-    
+
     def __init__(self, github_token: str):
         self.github_token = github_token
         self.base_url = "https://api.github.com"
-    
+
     async def create_pr(
         self,
         repo: str,
@@ -881,50 +898,53 @@ class RemediationPR:
     ) -> str:
         """Create a remediation PR for the given repository."""
         owner, repo_name = repo.split("/")
-        
+
         # 1. Get default branch
         default_branch = await self._get_default_branch(owner, repo_name)
-        
+
         # 2. Create new branch
         await self._create_branch(owner, repo_name, branch_name, default_branch)
-        
+
         # 3. Group findings by file
         findings_by_file = self._group_by_file(findings)
-        
+
         # 4. For each file, replace secrets and commit
         for file_path, file_findings in findings_by_file.items():
             await self._remediate_file(owner, repo_name, branch_name, file_path, file_findings)
-        
+
         # 5. Add .gitignore rules
         await self._add_gitignore_rules(owner, repo_name, branch_name, findings)
-        
+
         # 6. Create PR
         pr_url = await self._create_pull_request(
             owner, repo_name, branch_name, default_branch, findings
         )
-        
+
         return pr_url
-    
+
     async def _get_default_branch(self, owner: str, repo: str) -> str:
         """Get the default branch name."""
         url = f"{self.base_url}/repos/{owner}/{repo}"
         data = await self._api_get(url)
         return data.get("default_branch", "main")
-    
+
     async def _create_branch(self, owner: str, repo: str, branch: str, base: str) -> None:
         """Create a new branch from base."""
         # Get base branch SHA
         url = f"{self.base_url}/repos/{owner}/{repo}/git/ref/heads/{base}"
         base_data = await self._api_get(url)
         base_sha = base_data["object"]["sha"]
-        
+
         # Create new branch
         url = f"{self.base_url}/repos/{owner}/{repo}/git/refs"
-        await self._api_post(url, {
-            "ref": f"refs/heads/{branch}",
-            "sha": base_sha,
-        })
-    
+        await self._api_post(
+            url,
+            {
+                "ref": f"refs/heads/{branch}",
+                "sha": base_sha,
+            },
+        )
+
     async def _remediate_file(
         self,
         owner: str,
@@ -937,27 +957,30 @@ class RemediationPR:
         # Get file content and SHA
         url = f"{self.base_url}/repos/{owner}/{repo}/contents/{file_path}?ref={branch}"
         file_data = await self._api_get(url)
-        
+
         content = base64.b64decode(file_data["content"]).decode("utf-8")
         sha = file_data["sha"]
-        
+
         # Replace each secret with placeholder
         for finding in findings:
             key = finding.get("key")  # Raw key (if stored)
             if key:
                 placeholder = f"YOUR_{finding['provider'].upper()}_KEY_HERE"
                 content = content.replace(key, placeholder)
-        
+
         # Commit updated file
         new_content_b64 = base64.b64encode(content.encode("utf-8")).decode("utf-8")
         url = f"{self.base_url}/repos/{owner}/{repo}/contents/{file_path}"
-        await self._api_put(url, {
-            "message": f"security: remove exposed {findings[0]['provider']} key from {file_path}",
-            "content": new_content_b64,
-            "sha": sha,
-            "branch": branch,
-        })
-    
+        await self._api_put(
+            url,
+            {
+                "message": f"security: remove exposed {findings[0]['provider']} key from {file_path}",
+                "content": new_content_b64,
+                "sha": sha,
+                "branch": branch,
+            },
+        )
+
     async def _add_gitignore_rules(
         self,
         owner: str,
@@ -974,7 +997,7 @@ class RemediationPR:
             "secrets.json",
             "config/secrets.yaml",
         ]
-        
+
         # Check if .gitignore exists
         url = f"{self.base_url}/repos/{owner}/{repo}/contents/.gitignore?ref={branch}"
         try:
@@ -984,15 +1007,15 @@ class RemediationPR:
         except Exception:
             content = ""
             sha = None
-        
+
         # Add missing rules
         existing_lines = set(content.splitlines())
         new_rules = [r for r in rules_to_add if r not in existing_lines]
-        
+
         if new_rules:
             content += "\n# Added by CredsClaw\n" + "\n".join(new_rules) + "\n"
             new_content_b64 = base64.b64encode(content.encode("utf-8")).decode("utf-8")
-            
+
             url = f"{self.base_url}/repos/{owner}/{repo}/contents/.gitignore"
             payload = {
                 "message": "security: add .gitignore rules for sensitive files",
@@ -1001,9 +1024,9 @@ class RemediationPR:
             }
             if sha:
                 payload["sha"] = sha
-            
+
             await self._api_put(url, payload)
-    
+
     async def _create_pull_request(
         self,
         owner: str,
@@ -1014,13 +1037,15 @@ class RemediationPR:
     ) -> str:
         """Create a pull request with remediation details."""
         url = f"{self.base_url}/repos/{owner}/{repo}/pulls"
-        
+
         # Build PR body
-        findings_table = "\n".join([
-            f"| {f['provider']} | {f.get('path', 'unknown')} | {f.get('severity', 'LOW')} | {f.get('confidence', 0)} |"
-            for f in findings
-        ])
-        
+        findings_table = "\n".join(
+            [
+                f"| {f['provider']} | {f.get('path', 'unknown')} | {f.get('severity', 'LOW')} | {f.get('confidence', 0)} |"
+                for f in findings
+            ]
+        )
+
         body = f"""## 🚨 Exposed Secrets Detected
 
 CredsClaw found **{len(findings)}** exposed secrets in this repository.
@@ -1045,17 +1070,17 @@ CredsClaw found **{len(findings)}** exposed secrets in this repository.
 
 *This PR was automatically generated by [CredsClaw](https://github.com/tedz/credsclaw)*
 """
-        
+
         payload = {
             "title": "🔒 Security: Remove exposed secrets and add .gitignore rules",
             "head": branch,
             "base": base,
             "body": body,
         }
-        
+
         pr_data = await self._api_post(url, payload)
         return pr_data["html_url"]
-    
+
     async def _api_get(self, url: str) -> Dict:
         """Make authenticated GET request."""
         headers = {
@@ -1066,7 +1091,7 @@ CredsClaw found **{len(findings)}** exposed secrets in this repository.
             async with session.get(url, headers=headers) as resp:
                 resp.raise_for_status()
                 return await resp.json()
-    
+
     async def _api_post(self, url: str, data: Dict) -> Dict:
         """Make authenticated POST request."""
         headers = {
@@ -1077,7 +1102,7 @@ CredsClaw found **{len(findings)}** exposed secrets in this repository.
             async with session.post(url, headers=headers, json=data) as resp:
                 resp.raise_for_status()
                 return await resp.json()
-    
+
     async def _api_put(self, url: str, data: Dict) -> Dict:
         """Make authenticated PUT request."""
         headers = {
@@ -1088,7 +1113,7 @@ CredsClaw found **{len(findings)}** exposed secrets in this repository.
             async with session.put(url, headers=headers, json=data) as resp:
                 resp.raise_for_status()
                 return await resp.json()
-    
+
     def _group_by_file(self, findings: List[Dict]) -> Dict[str, List[Dict]]:
         """Group findings by file path."""
         grouped: Dict[str, List[Dict]] = {}
@@ -1107,7 +1132,7 @@ remed = parser.add_argument_group("Remediation")
 remed.add_argument(
     "--create-remediation-pr",
     action="store_true",
-    help="Create GitHub PRs to remove exposed secrets (requires --store-raw-keys)"
+    help="Create GitHub PRs to remove exposed secrets (requires --store-raw-keys)",
 )
 ```
 
@@ -1157,13 +1182,24 @@ from typing import List, Dict, Any, Tuple
 logger = logging.getLogger(__name__)
 
 SECRET_INDICATORS = [
-    "api_key", "apikey", "api-key",
-    "secret", "secret_key", "secretkey",
-    "token", "access_token", "auth_token",
-    "password", "passwd", "pwd",
-    "private_key", "privatekey",
-    "credential", "credentials",
+    "api_key",
+    "apikey",
+    "api-key",
+    "secret",
+    "secret_key",
+    "secretkey",
+    "token",
+    "access_token",
+    "auth_token",
+    "password",
+    "passwd",
+    "pwd",
+    "private_key",
+    "privatekey",
+    "credential",
+    "credentials",
 ]
+
 
 def scan_json_file(content: str, filename: str) -> List[Tuple[str, str, float, str]]:
     """Scan JSON file for secrets using semantic analysis."""
@@ -1171,10 +1207,11 @@ def scan_json_file(content: str, filename: str) -> List[Tuple[str, str, float, s
         data = json.loads(content)
     except json.JSONDecodeError:
         return []
-    
+
     candidates = []
     _scan_json_object(data, "", candidates)
     return candidates
+
 
 def _scan_json_object(
     obj: Any,
@@ -1185,26 +1222,29 @@ def _scan_json_object(
     if isinstance(obj, dict):
         for key, value in obj.items():
             current_path = f"{path}.{key}" if path else key
-            
+
             # Check if key name indicates a secret
             key_lower = key.lower()
             is_secret_key = any(indicator in key_lower for indicator in SECRET_INDICATORS)
-            
+
             if is_secret_key and isinstance(value, str):
                 # High confidence if key name suggests secret
-                candidates.append((
-                    value,
-                    f"JSON key: {current_path}",
-                    85.0,  # High confidence due to semantic match
-                    "HIGH",
-                ))
-            
+                candidates.append(
+                    (
+                        value,
+                        f"JSON key: {current_path}",
+                        85.0,  # High confidence due to semantic match
+                        "HIGH",
+                    )
+                )
+
             # Recurse into nested objects
             _scan_json_object(value, current_path, candidates)
-    
+
     elif isinstance(obj, list):
         for i, item in enumerate(obj):
             _scan_json_object(item, f"{path}[{i}]", candidates)
+
 
 def scan_yaml_file(content: str, filename: str) -> List[Tuple[str, str, float, str]]:
     """Scan YAML file for secrets using semantic analysis."""
@@ -1212,20 +1252,21 @@ def scan_yaml_file(content: str, filename: str) -> List[Tuple[str, str, float, s
         data = yaml.safe_load(content)
     except yaml.YAMLError:
         return []
-    
+
     candidates = []
     _scan_json_object(data, "", candidates)  # YAML loads as dict/list, same as JSON
     return candidates
 
+
 def scan_structured_file(content: str, filename: str) -> List[Tuple[str, str, float, str]]:
     """Route to appropriate scanner based on file extension."""
     ext = Path(filename).suffix.lower()
-    
+
     if ext == ".json":
         return scan_json_file(content, filename)
     elif ext in (".yaml", ".yml"):
         return scan_yaml_file(content, filename)
-    
+
     return []
 ```
 

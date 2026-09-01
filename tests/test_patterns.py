@@ -4,19 +4,19 @@ import re
 
 from auditor import (
     ANTHROPIC_KEY_PATTERN,
-    OPENAI_KEY_PATTERN,
-    GOOGLE_AI_KEY_PATTERN,
     AWS_ACCESS_KEY_PATTERN,
-    GITHUB_TOKEN_PATTERN,
-    SLACK_TOKEN_PATTERN,
-    HUGGINGFACE_KEY_PATTERN,
-    CLOUDFLARE_TOKEN_PATTERN,
     AZURE_CONNECTION_STRING_PATTERN,
-    REPLICATE_API_TOKEN_PATTERN,
+    CLOUDFLARE_TOKEN_PATTERN,
+    GITHUB_TOKEN_PATTERN,
+    GOOGLE_AI_KEY_PATTERN,
     GROQ_API_KEY_PATTERN,
-    OPENROUTER_API_KEY_PATTERN,
-    TOGETHER_API_KEY_PATTERN,
+    HUGGINGFACE_KEY_PATTERN,
     MISTRAL_API_KEY_PATTERN,
+    OPENAI_KEY_PATTERN,
+    OPENROUTER_API_KEY_PATTERN,
+    REPLICATE_API_TOKEN_PATTERN,
+    SLACK_TOKEN_PATTERN,
+    TOGETHER_API_KEY_PATTERN,
 )
 
 
@@ -97,11 +97,11 @@ def test_valid_huggingface_key():
 # ~~~ Cloudflare ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 def test_valid_cloudflare_token():
     assert len(re.findall(CLOUDFLARE_TOKEN_PATTERN, "cfk_" + "a" * 40 + "01234567")) == 1
-    assert len(re.findall(CLOUDFLARE_TOKEN_PATTERN, "cfut_" + "a" * 40 + "abcdef" )) == 1
-    assert len(re.findall(CLOUDFLARE_TOKEN_PATTERN, "cfat_" + "a" * 40 + "89abcdef" )) == 1
-    assert len(re.findall(CLOUDFLARE_TOKEN_PATTERN, "cft_" + "a" * 40 + "012345" )) == 1
+    assert len(re.findall(CLOUDFLARE_TOKEN_PATTERN, "cfut_" + "a" * 40 + "abcdef")) == 1
+    assert len(re.findall(CLOUDFLARE_TOKEN_PATTERN, "cfat_" + "a" * 40 + "89abcdef")) == 1
+    assert len(re.findall(CLOUDFLARE_TOKEN_PATTERN, "cft_" + "a" * 40 + "012345")) == 1
     # Token body may contain underscores and hyphens
-    assert len(re.findall(CLOUDFLARE_TOKEN_PATTERN, "cfk_" + "a_b-c" * 10 + "01234567" )) == 1
+    assert len(re.findall(CLOUDFLARE_TOKEN_PATTERN, "cfk_" + "a_b-c" * 10 + "01234567")) == 1
 
 
 # ~~~ Replicate ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -114,7 +114,7 @@ def test_valid_replicate_token():
 # ~~~ Groq ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 def test_valid_groq_key():
     assert len(re.findall(GROQ_API_KEY_PATTERN, "gsk_" + "a" * 30)) == 1
-    assert len(re.findall(GROQ_API_KEY_PATTERN, "gsk_short") ) == 0
+    assert len(re.findall(GROQ_API_KEY_PATTERN, "gsk_short")) == 0
 
 
 # ~~~ OpenRouter ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

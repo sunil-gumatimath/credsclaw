@@ -3,9 +3,9 @@
 import argparse
 
 from auditor import (
-    load_config,
     apply_config_to_parser,
     build_arg_parser,
+    load_config,
 )
 
 
@@ -24,6 +24,7 @@ def test_load_config_invalid_yaml(tmp_path):
 def test_load_config_valid_yaml(tmp_path):
     """load_config should parse valid YAML correctly."""
     import yaml
+
     config_data = {
         "mode": "local",
         "providers": ["openai", "github"],
