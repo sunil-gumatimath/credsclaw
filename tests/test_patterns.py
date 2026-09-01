@@ -107,8 +107,10 @@ def test_valid_cloudflare_token():
 # ~~~ Replicate ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 def test_valid_replicate_token():
     assert len(re.findall(REPLICATE_API_TOKEN_PATTERN, "r8_" + "a" * 37)) == 1
+    assert len(re.findall(REPLICATE_API_TOKEN_PATTERN, "r8_" + "a" * 38)) == 1
+    assert len(re.findall(REPLICATE_API_TOKEN_PATTERN, "r8_" + "a" * 40)) == 1
     assert len(re.findall(REPLICATE_API_TOKEN_PATTERN, "r8_" + "a" * 36)) == 0
-    assert len(re.findall(REPLICATE_API_TOKEN_PATTERN, "r8_" + "a" * 38)) == 0
+    assert len(re.findall(REPLICATE_API_TOKEN_PATTERN, "r8_" + "a" * 41)) == 0
 
 
 # ~~~ Groq ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

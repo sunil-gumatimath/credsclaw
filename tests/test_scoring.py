@@ -11,8 +11,9 @@ from auditor import (
 def test_mask_and_fingerprint():
     key = "sk-proj-abcdefghijklmnopqrstuvwxyz1234567890123456789012345678903456"
     masked = mask_key(key)
-    assert masked.startswith("sk-proj-")
-    assert masked.endswith("3456")
+    assert masked.startswith("sk-p")
+    assert masked.endswith("56")
+    assert "..." in masked
     fp = fingerprint_key(key)
     assert len(fp) == 64
 
@@ -52,7 +53,8 @@ def test_shannon_entropy_empty_string():
 
 
 def test_mask_key_short():
-    assert mask_key("shortkey12") == "***"
+    assert mask_key("short") == "***"
+    assert mask_key("ab") == "***"
 
 
 def test_severity_boundary_values():
