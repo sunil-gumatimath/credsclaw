@@ -21,6 +21,15 @@ SEARCH_QUOTA = 8
 MIN_REQUEST_INTERVAL = 7.0
 
 
+def _lookup_header(headers: dict[str, str], name: str) -> str | None:
+    """Case-insensitive header lookup (aiohttp headers are case-insensitive)."""
+    lower = name.lower()
+    for k, v in headers.items():
+        if k.lower() == lower:
+            return v
+    return None
+
+
 class RateLimiter:
     """Track GitHub API rate limits and apply backoff on 403/429.
 
@@ -29,7 +38,7 @@ class RateLimiter:
     first request and exhaust the quota in one barrage.
     """
 
-    def __init__(self, max_retries: int = 5):
+    def __init__(self, max_retries: int = 5) -> None:
         self.max_retries = max_retries
         self._lock = asyncio.Lock()
         self._remaining = SEARCH_QUOTA
@@ -82,8 +91,8 @@ class RateLimiter:
     async def update_from_headers(self, headers: dict[str, str]) -> None:
         """Update the token bucket from GitHub response headers."""
         async with self._lock:
-            raw_remaining = headers.get("X-RateLimit-Remaining")
-            raw_reset = headers.get("X-RateLimit-Reset")
+            raw_remaining = _lookup_header(headers, "X-RateLimit-Remaining")
+            raw_reset = _lookup_header(headers, "X-RateLimit-Reset")
             if raw_remaining is not None:
                 try:
                     self._remaining = int(raw_remaining)
@@ -99,10 +108,10 @@ class RateLimiter:
         """Legacy hook -- called after each response.  Also updates bucket."""
         await self.update_from_headers(response_headers)
 
-        retry_after = response_headers.get("Retry-After")
+        retry_after = _lookup_header(response_headers, "Retry-After")
         if retry_after and status in {403, 429}:
             try:
-                wait_time = max(1, int(retry_after))
+                wait_time = max(1, int(float(retry_after)))
             except (ValueError, TypeError):
                 wait_time = 5
             logger.warning("Rate-limited (Retry-After). Waiting %s seconds...", wait_time)

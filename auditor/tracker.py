@@ -1,7 +1,10 @@
 """Checkpoint / resume progress tracking."""
 
+import contextlib
 import json
 import logging
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +21,7 @@ class ProgressTracker:
         self,
         checkpoint_file: str = "output/progress.json",
         store_raw_keys: bool = False,
-    ):
+    ) -> None:
         self.checkpoint_file = checkpoint_file
         self.store_raw_keys = store_raw_keys
         self.processed: set[str] = set()
@@ -62,7 +65,9 @@ class ProgressTracker:
             )
         except (json.JSONDecodeError, KeyError, TypeError) as exc:
             logger.error("Failed to load progress (format error): %s", exc)
-        except Exception as exc:
+        except OSError as exc:
+            logger.warning("Failed to read progress file %s: %s", path, exc)
+        except Exception as exc:  # pragma: no cover - defensive
             logger.warning("Unexpected error loading progress: %s", exc, exc_info=True)
 
     def save_progress(self) -> None:
@@ -84,16 +89,19 @@ class ProgressTracker:
 
             path = Path(self.checkpoint_file)
             path.parent.mkdir(parents=True, exist_ok=True)
-            import os
-            import tempfile
 
             tmp_fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
             try:
                 with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
                     json.dump(payload, f, indent=2)
                 os.replace(tmp_path, str(path))
+                # Restrict checkpoint to owner-only (contains key hashes/masks).
+                with contextlib.suppress(OSError):
+                    os.chmod(path, 0o600)
             except Exception:
-                os.unlink(tmp_path)
+                # Clean up temporary file on failure.
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp_path)
                 raise
         except Exception as exc:
             logger.error("Failed to save progress: %s", exc)

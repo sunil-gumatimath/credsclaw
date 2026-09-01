@@ -33,6 +33,12 @@ from auditor.validator import VALIDATION_MAP, create_validator_session
 
 logger = logging.getLogger(__name__)
 
+# Audit hardening constants
+MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024  # Skip files larger than 5 MB (avoid OOM)
+CONTEXT_WINDOW = 80  # Characters of context around a match (was 40; S-MED-02)
+VALIDATION_CONCURRENCY = 5  # Max parallel validation requests (V-MED-04)
+_PATTERN_CACHE: dict[str, re.Pattern[str]] = {}
+
 
 class APIAuditor:
     """Scans GitHub code/commits, local directories, or git history for exposed API keys."""
@@ -322,10 +328,19 @@ class APIAuditor:
 
     def extract_candidates(self, content: str, pattern: str) -> list[tuple[str, str, float, str]]:
         candidates: list[tuple[str, str, float, str]] = []
-        for match in re.finditer(pattern, content):
+        # Cache compiled patterns to avoid re.compile on every file (P-LOW-01).
+        compiled = _PATTERN_CACHE.get(pattern)
+        if compiled is None:
+            try:
+                compiled = re.compile(pattern)
+            except re.error as exc:
+                logger.warning("Invalid regex pattern skipped: %s (%s)", pattern, exc)
+                return candidates
+            _PATTERN_CACHE[pattern] = compiled
+        for match in compiled.finditer(content):
             key = match.group(0)
-            start = max(0, match.start() - 40)
-            end = min(len(content), match.end() + 40)
+            start = max(0, match.start() - CONTEXT_WINDOW)
+            end = min(len(content), match.end() + CONTEXT_WINDOW)
             context = content[start:end]
             is_probable, confidence = self.is_probable_secret(key, context)
             if is_probable:
@@ -344,11 +359,17 @@ class APIAuditor:
             return
         no_ssl_verify = getattr(self.args, "no_ssl_verify", False)
         timeout = getattr(self.args, "timeout", 10)
+        # Bound validation concurrency to avoid provider rate-limits / FD exhaustion (V-MED-04).
+        val_semaphore = asyncio.Semaphore(VALIDATION_CONCURRENCY)
+
         # Reuse a single session for all validations in this batch
         async with create_validator_session(no_ssl_verify, timeout) as session:
-            tasks = [
-                validator(raw_key, timeout, no_ssl_verify, session) for _, raw_key in keys_data
-            ]
+
+            async def _validated(key: str) -> bool | None:
+                async with val_semaphore:
+                    return await validator(key, timeout, no_ssl_verify, session)  # type: ignore[no-untyped-call]
+
+            tasks = [_validated(raw_key) for _, raw_key in keys_data]
             results = await asyncio.gather(*tasks)
             for (key_data, _), valid in zip(keys_data, results, strict=False):
                 async with self.lock:
@@ -409,14 +430,20 @@ class APIAuditor:
 
         async def _wrapped(item: Any) -> None:
             async with self.semaphore:
-                await process_func(item, keys_to_validate)
+                try:
+                    await process_func(item, keys_to_validate)
+                except Exception as exc:
+                    logger.debug("Item processing failed for %s: %s", provider, exc)
 
         tasks = [asyncio.create_task(_wrapped(item)) for item in items]
         iterator = asyncio.as_completed(tasks)
         if tqdm:
             iterator = tqdm(iterator, total=len(tasks), desc=description)
         for coro in iterator:
-            await coro
+            try:
+                await coro
+            except Exception as exc:  # pragma: no cover - defensive (wrapped above)
+                logger.debug("Task failed for %s: %s", provider, exc)
 
         if self.args.validate and keys_to_validate:
             logger.info("Validating %s %s keys...", len(keys_to_validate), provider)
@@ -665,6 +692,9 @@ class APIAuditor:
         for file_path in dir_path.rglob("*"):
             if not file_path.is_file():
                 continue
+            # Skip symlinks to avoid loops / out-of-scope reads.
+            if file_path.is_symlink():
+                continue
             # Skip hidden directories (e.g., .git, .venv), but NOT hidden files like .env
             parts = file_path.relative_to(dir_path).parts
             if any(part.startswith(".") for part in parts[:-1]):
@@ -672,6 +702,15 @@ class APIAuditor:
             if file_path.suffix.lower() in skip_extensions:
                 continue
             if allowed_extensions and file_path.suffix.lower() not in allowed_extensions:
+                continue
+            # Skip very large files to avoid OOM.
+            try:
+                if file_path.stat().st_size > MAX_FILE_SIZE_BYTES:
+                    logger.debug(
+                        "Skipping large file %s (%s bytes)", file_path, file_path.stat().st_size
+                    )
+                    continue
+            except OSError:
                 continue
             all_files.append(file_path)
 

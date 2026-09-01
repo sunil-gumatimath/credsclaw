@@ -4,9 +4,9 @@ import re
 from datetime import UTC, datetime
 
 
-def parse_iso8601(value: str) -> datetime | None:
+def parse_iso8601(value: str | None) -> datetime | None:
     """Parse an ISO-8601 date string, handling Z suffix and fractional seconds."""
-    if not value or not value.strip():
+    if not value or not isinstance(value, str) or not value.strip():
         return None
     value = value.strip()
     try:
