@@ -3,14 +3,10 @@ FROM python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
-
 WORKDIR /opt/auditor
 
-# Install dependencies first (layer caching)
-COPY requirements.txt pyproject.toml README.md ./
-RUN python -m pip install -r requirements.txt
-
-# Copy the package and install it so `python -m auditor` works from any directory
+# Install dependencies first (layer caching) — single pip install from pyproject
+COPY pyproject.toml README.md ./
 COPY auditor/ ./auditor/
 RUN python -m pip install .
 
