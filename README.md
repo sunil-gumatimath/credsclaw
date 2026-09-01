@@ -141,7 +141,7 @@ python -m auditor --repo owner/repo --providers all --validate
 | `--providers` | `openai,anthropic` | Comma-separated provider list (or `all` for every provider) |
 | `--repo` | (empty) | Specific repository: `owner/repo` |
 | `--dir` | (empty) | Directory for local/git-history mode |
-| `--output-format` | `json` | Output format: `json`, `csv`, `txt`, `html` |
+| `--output-format` | `json` | Output format: `json`, `csv`, `txt`, `html`, `sarif` |
 | `--output-file` | `output/audit_results.{ext}` | Custom output path |
 | `--confidence-threshold` | `50.0` | Minimum score (0-100) to report a finding |
 | `--validate` | off | Ping provider APIs to confirm keys are live |
@@ -306,6 +306,10 @@ Both can be loaded from a `.env` file in the project root.
 ### JSON (`output/audit_results.json`)
 
 Full structured data including masked keys, hashes, timestamps, and validation status.
+
+### SARIF (`output/audit_results.sarif`)
+
+SARIF 2.1.0 for GitHub Code Scanning / VS Code SARIF Viewer.
 
 ### CSV (`output/audit_results.csv`)
 
