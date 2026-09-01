@@ -129,7 +129,12 @@ class APIAuditor:
                 "https://api.github.com/rate_limit", headers=headers
             ) as resp:
                 data = await resp.json()
-            search = data.get("resources", {}).get("search", {})
+            resources = data.get("resources", {})
+            # Code search has its own, stricter quota (10/min authenticated)
+            # separate from general search (30/min). Prefer code_search so we
+            # don't seed the bucket with 30 and blow the 10/min budget on the
+            # first concurrent volley.
+            search = resources.get("code_search") or resources.get("search", {})
             remaining = search.get("remaining", SEARCH_QUOTA)
             reset_at = search.get("reset", 0)
             await self.rate_limiter.update_from_headers({
@@ -410,7 +415,8 @@ class APIAuditor:
         keys_to_validate: List[Tuple[Dict[str, Any], str]] = []
 
         async def _wrapped(item: Any) -> None:
-            return await process_func(item, keys_to_validate)
+            async with self.semaphore:
+                return await process_func(item, keys_to_validate)
 
         tasks = [asyncio.create_task(_wrapped(item)) for item in items]
         iterator = asyncio.as_completed(tasks)
@@ -486,8 +492,7 @@ class APIAuditor:
                 if self.progress.is_processed(identifier):
                     return
 
-            async with self.semaphore:
-                content = await self.get_file_content(repo, path)
+            content = await self.get_file_content(repo, path)
             if not content:
                 async with self.lock:
                     self.progress.mark_processed(identifier)
@@ -751,9 +756,6 @@ class APIAuditor:
         except FileNotFoundError:
             logger.error("git executable not found on PATH")
             return
-        except subprocess.TimeoutExpired:
-            logger.error("git log timed out (large repository?)")
-            return
 
         if not raw_log:
             logger.info("No commits found in %s", directory)
@@ -782,25 +784,27 @@ class APIAuditor:
                 if self.progress.is_processed(identifier):
                     return
 
-            async with self.semaphore:
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    "git", "show", sha, "--format=",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=str(dir_path),
+                )
                 try:
-                    process = await asyncio.create_subprocess_exec(
-                        "git", "show", sha, "--format=",
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                        cwd=str(dir_path),
-                    )
-                    try:
-                        stdout_bytes, _ = await asyncio.wait_for(process.communicate(), timeout=30)
-                    except asyncio.TimeoutError:
-                        process.kill()
-                        await process.communicate()
-                        raise subprocess.TimeoutExpired(["git", "show"], 30)
-                    diff_text = stdout_bytes.decode("utf-8", errors="replace")
-                except (subprocess.TimeoutExpired, FileNotFoundError):
+                    stdout_bytes, _ = await asyncio.wait_for(process.communicate(), timeout=30)
+                except asyncio.TimeoutError:
+                    process.kill()
+                    await process.communicate()
+                    logger.warning("git show timed out for %s", sha)
                     async with self.lock:
                         self.progress.mark_processed(identifier)
                     return
+                diff_text = stdout_bytes.decode("utf-8", errors="replace")
+            except FileNotFoundError:
+                async with self.lock:
+                    self.progress.mark_processed(identifier)
+                return
 
             local_candidates = self.extract_candidates(diff_text, pattern)
 

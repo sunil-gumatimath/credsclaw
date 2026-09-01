@@ -118,12 +118,13 @@ async def main() -> None:
             if args.repo:
                 suffix_chunks = [f" repo:{args.repo}"]
             elif args.recent_repos_days is not None:
-                # Group discovered repos in chunks of 5
-                chunk_size = 5
-                for i in range(0, len(discovered_repos), chunk_size):
-                    chunk = discovered_repos[i:i + chunk_size]
-                    repo_terms = ",".join(chunk)
-                    suffix_chunks.append(f" repo:{repo_terms}")
+                # GitHub's code-search `repo:` qualifier accepts exactly ONE
+                # repository per query. Comma-joining several (`repo:A,B,C`)
+                # is accepted but silently drops every repo after the first,
+                # and an OR-group (`(repo:A OR repo:B)`) is rejected with 422.
+                # The only correct form is therefore one query per repo.
+                for repo in discovered_repos:
+                    suffix_chunks.append(f" repo:{repo}")
             else:
                 suffix_chunks = [""]
                 if args.mode in ("code", "commits"):
