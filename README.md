@@ -443,6 +443,41 @@ tests/                          # Module-scoped test files
 └── test_scanner.py             # Noise/allow/deny filtering, git history tests
 ```
 
+### Audit Flow
+
+```mermaid
+flowchart TD
+    subgraph Setup["1 · Setup"]
+        S1["Install: pip install -e ."] --> S2["Token: GITHUB_TOKEN in .env"]
+        S2 --> S3["Config: CLI flags win over auditor.yaml"]
+    end
+    subgraph Target["2 · Target"]
+        S3 --> T{"Mode?"}
+        T -- code --> T1["--repo owner/name"]
+        T -- code --> T2["--recent-repos-days N (max 100 repos)"]
+        T -- code --> T3["Global code index"]
+        T -- commits --> T4["Commit-message search"]
+        T -- local/git-history --> T5["--dir path"]
+    end
+    subgraph Detect["3 · Detect (per provider)"]
+        T1 & T2 & T3 & T4 & T5 --> D1["Regex extract candidates"]
+        D1 --> D2{"deny match? → drop"}
+        D2 --> D3{"noise word? → drop (allow-pattern overrides)"}
+        D3 --> D4["Score 0-100: entropy 30 + context 25 + noise 20 + length 15 + diversity 10"]
+        D4 --> D5{"Above --confidence-threshold?"}
+    end
+    subgraph Confirm["4 · Confirm and export"]
+        D5 -- Yes --> C1["--validate? live API check: valid / dead / unknown"]
+        D5 -- No --> C4["Discard"]
+        C1 --> C2["Export json/csv/txt/html/sarif + audit.log"]
+        C2 --> C3{"Exit: 0 clean, 2 fail-on hit, 1 error"}
+    end
+    subgraph Notify["5 · Notify"]
+        C3 --> N1["Masked finding to repo owner (advisory or issue)"]
+        N1 --> N2["Owner revokes key + purges history"]
+    end
+```
+
 ### Key Design Decisions
 
 | Decision | Rationale |
