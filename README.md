@@ -3,7 +3,7 @@
 > **Async Python CLI** that scans GitHub repositories, local directories, and git history for leaked API keys and secrets across **14 providers**. Features intelligent confidence scoring, deduplication, checkpoint/resume, and rich HTML reports.
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](# )
-[![Tests](https://img.shields.io/badge/tests-71%20passing-brightgreen)](# )
+[![Tests](https://img.shields.io/badge/tests-passing-brightgreen)](# )
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow)](# )
 
 ---
@@ -31,11 +31,11 @@
 ## Features
 
 | Feature | Description |
-|---|---|
+| --- | --- |
 | **4 scan modes** | GitHub code search, commit messages, local directory, git history |
 | **Recent-repo discovery** | Auto-discover repos pushed to in last N days and scan them |
 | **14 provider patterns** | OpenAI, Anthropic, Google, AWS, GitHub, Slack, HuggingFace, Cloudflare, Azure, Replicate, Groq, OpenRouter, Together AI, Mistral AI |
-| **Confidence scoring** | Multi-factor analysis: Shannon entropy, context keywords, length, character diversity, noise penalties |
+| **Confidence scoring** | Multi-factor analysis: Shannon entropy, context keywords, noise handling, length, character diversity |
 | **Severity tiers** | CRITICAL (80+), HIGH (60-79), MEDIUM (40-59), LOW (<40) |
 | **Live validation** | Ping provider APIs to confirm whether discovered keys are still active |
 | **Deduplication** | SHA-256 fingerprinting prevents the same key from being reported twice |
@@ -44,8 +44,8 @@
 | **Encrypted output** | Fernet-symmetric encryption for sensitive results |
 | **Pre-commit integration** | Built in `.pre-commit-config.yaml` generation |
 | **YAML config** | Persistent configuration with CLI override precedence |
-| **Dry-run mode** | Estimate scope without fetching file contents |
-| **Allow / deny patterns** | Regex-based filtering to include or exclude matches |
+| **Dry-run mode** | List/scope items only: no content fetch, no matching, no validation, no export |
+| **Allow / deny patterns** | Regex filtering — deny always wins; allow narrows scope and can surface noise-flagged candidates |
 | **Shared validation sessions** | Reuses a single `aiohttp.ClientSession` per batch for efficient live validation |
 
 ---
@@ -57,10 +57,10 @@
 git clone <repo-url> && cd credsclaw
 pip install -e .
 
-# 2. Set your GitHub token (see "GitHub Token Setup" below)
-echo "GITHUB_TOKEN=ghp_..." > .env
+# 2. Set your GitHub token (see "GitHub Token Setup" below; appends so an existing .env is preserved)
+grep -q GITHUB_TOKEN .env 2>/dev/null || echo "GITHUB_TOKEN=ghp_..." >> .env
 
-# 3. Run a scan
+# 3. Run a scan (after install, `credsclaw` / `auditor` work interchangeably with `python -m auditor`)
 python -m auditor --repo owner/repo --providers openai,github,aws
 
 # 4. Try local directory scan
@@ -82,7 +82,7 @@ CredsClaw needs a GitHub personal access token to search code and commits. Here'
 7. **Save it** in a `.env` file in the project root:
 
    ```bash
-   echo "GITHUB_TOKEN=your_token_here" > .env
+   grep -q GITHUB_TOKEN .env 2>/dev/null || echo "GITHUB_TOKEN=your_token_here" >> .env
    ```
 
 > **Note:** The token is only used to authenticate with GitHub's API. It's never stored in results or sent anywhere else.
@@ -94,7 +94,6 @@ CredsClaw needs a GitHub personal access token to search code and commits. Here'
 ### Standard
 
 ```bash
-pip install -r requirements.txt
 pip install -e .
 ```
 
@@ -112,6 +111,7 @@ pip install -e .
 
 ```bash
 python -m auditor [options]
+# after `pip install -e .`, `credsclaw` / `auditor` are identical shorthands
 ```
 
 ### Basic Examples
@@ -136,7 +136,7 @@ python -m auditor --repo owner/repo --providers all --validate
 ### Common Options
 
 | Flag | Default | Description |
-|---|---|---|
+| --- | --- | --- |
 | `--mode` | `code` | Scan mode: `code`, `commits`, `local`, `git-history` |
 | `--providers` | `openai,anthropic` | Comma-separated provider list (or `all` for every provider) |
 | `--repo` | (empty) | Specific repository: `owner/repo` |
@@ -145,15 +145,17 @@ python -m auditor --repo owner/repo --providers all --validate
 | `--output-file` | `output/audit_results.{ext}` | Custom output path |
 | `--confidence-threshold` | `50.0` | Minimum score (0-100) to report a finding |
 | `--validate` | off | Ping provider APIs to confirm keys are live |
-| `--dry-run` | off | Count matches without fetching contents |
+| `--dry-run` | off | List/scope items only: no content fetch, no matching, no validation, no export, no checkpoint write (CI gates skipped, always exit 0) |
 | `--max-concurrency` | `10` | Parallel file processors |
 | `--store-raw-keys` | off | Store raw keys in output (unsafe, use encryption) |
 | `--encrypt-output` | off | Encrypt results with Fernet |
 | `--encryption-key` | (unset) | ⚠️ Deprecated — use `OUTPUT_ENCRYPTION_KEY` env var instead |
 | `--no-ssl-verify` | off | Disable SSL certificate verification (for corporate proxies) |
+| `--fail-on-findings` | off | Exit with code 2 if any findings meet the confidence threshold (CI gatekeeper) |
+| `--fail-on-severity` | (unset) | Exit with code 2 if findings reach this tier: `LOW`, `MEDIUM`, `HIGH`, `CRITICAL` |
 | `--config` | `auditor.yaml` | YAML configuration file path |
 | `--recent-repos-days` | (empty) | Discover repos pushed to in last N days (mode: `code`/`commits` only) |
-| `--resume` | off | Continue from previous checkpoint |
+| `--resume` | off | Continue from previous checkpoint (without `--resume`/`--since-checkpoint`, an existing checkpoint file is deleted at startup) |
 | `--checkpoint-file` | `output/progress.json` | Path to checkpoint file |
 | `--since-checkpoint` | off | Only process items newer than checkpoint timestamp |
 | `--checkpoint-interval` | `25` | Save checkpoint every N processed items |
@@ -161,13 +163,14 @@ python -m auditor --repo owner/repo --providers all --validate
 | `--allow-patterns` | (empty) | Comma-separated regex allow patterns |
 | `--deny-patterns` | (empty) | Comma-separated regex deny patterns |
 | `--generate-pre-commit-hook` | off | Write `.pre-commit-config.yaml` and exit |
+| `--force` | off | Overwrite existing files (e.g., re-generate the pre-commit hook) |
 | `--help` | | Show full argument reference |
 
 ### GitHub Filters
 
 | Flag | Description |
-|---|---|
-| `--recent-repos-days` | Discover repos pushed to in last N days (disables `--repo`/`--dir`) |
+| --- | --- |
+| `--recent-repos-days` | Discover repos pushed to in last N days (disables `--repo`/`--dir`; capped at 100 repos per run, most recently updated first) |
 | `--max-pages` | Maximum GitHub API pages |
 | `--min-stars` | Minimum repository stars |
 | `--language` | Programming language filter |
@@ -193,7 +196,7 @@ Use `--recent-repos-days` to auto-discover public repos pushed to recently:
 python -m auditor --recent-repos-days 7 --providers all --mode code
 ```
 
-> **Note:** `--recent-repos-days` discovers repos by push date, then searches those repos for key patterns. For best results, use `--language` to filter (e.g., `--language python`) and increase `--max-pages`.
+> **Note:** `--recent-repos-days` discovers repos by push date, then searches those repos for key patterns. Capped at 100 repos per run (most recently updated first). For best results, use `--language` to filter (e.g., `--language python`) and increase `--max-pages`.
 
 ### `commits` — GitHub Commit Message Search
 
@@ -205,7 +208,7 @@ python -m auditor --mode commits --providers github
 
 ### `local` — Local Directory Scan
 
-Recursively scans all files in a local directory. Automatically skips binary files, hidden directories (`.git`, `.venv`), and respects `--extensions` filters. **Does not require a GitHub token.**
+Recursively scans all files in a local directory. Skips symlinks, files larger than 5 MB, an extension blocklist of binaries/archives/media (not content sniffing — a binary blob named `.txt` is still scanned), and hidden directories except `.github/` (which *is* scanned); respects `--extensions` filters. **Does not require a GitHub token.**
 
 ```bash
 python -m auditor --mode local --dir . --providers aws,github --output-format html
@@ -219,28 +222,32 @@ Runs `git log --all` and inspects every commit's diff content for exposed keys. 
 python -m auditor --mode git-history --dir ./my-repo --providers github,slack
 ```
 
+### Filtering precedence (`--allow-patterns` / `--deny-patterns`)
+
+Deny is checked first and always wins. Allow narrows scope when set (candidate must match it) and is the only way to surface noise-flagged candidates — those then score 5 pts on the noise factor instead of being dropped. Allow-patterns cannot rescue low-confidence non-noisy keys (still gated by `--confidence-threshold`).
+
 ---
 
 ## Supported Providers
 
 | Provider | Pattern Prefix(es) | Live Validation |
-|---|---|---|
-| **Anthropic** | `sk-ant-apiXX-`, `sk-ant-oatXX-`, `sk-ant-admin-` | ✓ |
+| --- | --- | --- |
+| **Anthropic** | `sk-ant-apiXX-`, `sk-ant-oatXX-`, `sk-ant-admin-`, `sk-ant-authXX-` (+ generic segments; 40+ char tail required) | ✓ |
 | **OpenAI** | `sk-` (classic, allows `-`/`_`), `sk-proj-`, `sk-svcacct-`, `sk-admin-`, `sk-svc-`, `sk-session-` (with `T3BlbkFJ` marker) | ✓ |
 | **Google AI** | `AIza...`, `AQ....`, `ya29....` | — |
 | **AWS** | 11 prefixes: `AKIA`, `ASIA`, `ABIA`, `ACCA`, `APKA`, `AIDA`, `AROA`, `AIPA`, `ANPA`, `AGPA`, `ASCA` | — |
 | **GitHub** | `ghp_`, `gho_`, `ghs_`, `ghr_`, `ghu_`, `github_pat_` | ✓ |
-| **Slack** | `xoxb-`, `xoxp-`, `xoxa-`, `xoxs-`, `xoxo-`, `xoxr-`, `xoxe-`, `xapp-`, `xwfp-`, `hooks.slack.com` | ✓ |
+| **Slack** | `xox[baprsoecde]-` (incl. `xoxc-`/`xoxd-`) in `xoxX-<9–13 digits>-<9–13 digits>-<24+ chars>` form, `xapp-`/`xwfp-` (24+ chars), `hooks.slack.com` | ✓* |
 | **HuggingFace** | `hf_` | ✓ |
-| **Cloudflare** | `cfk_`, `cfut_`, `cfat_`, `cft_` (body allows `-`/`_`) | ✓ |
+| **Cloudflare** | `cfk_`, `cfut_`, `cfat_`, `cft_` (body allows `-`/`_` + mandatory 6–16 hex tail; `cft_` matched locally, not in GitHub code-search query) | ✓ |
 | **Azure** | Connection strings (`Endpoint=sb://` or `DefaultEndpointsProtocol`) | — |
-| **Replicate** | `r8_` + exactly 37 chars (40 total) | ✓ |
+| **Replicate** | `r8_` + 37–40 alphanumerics (40–43 total) | ✓ |
 | **Groq** | `gsk_` | ✓ |
 | **OpenRouter** | `sk-or-` | ✓ |
 | **Together AI** | `together_` (allows `-`/`_`) | ✓ |
 | **Mistral AI** | `mist_` (allows `-`/`_`) | ✓ |
 
-Live validatable providers ping their respective APIs to confirm whether the discovered key is still active.
+Live validatable providers ping their respective APIs to confirm whether the discovered key is still active. \*Slack webhook URLs (`hooks.slack.com`) are detected but never live-validated. All patterns enforce minimum lengths — see `auditor/patterns.py` for exact shapes.
 
 ---
 
@@ -251,17 +258,17 @@ Each potential secret is scored from **0–100** using a multi-factor model. The
 ### Scoring Factors
 
 | Factor | Max Points | Description |
-|---|---|---|
+| --- | --- | --- |
 | **Shannon Entropy** | 30 | Higher randomness = more likely a real key |
 | **Context Keywords** | 25 | Surrounding text contains `api_key`, `secret`, `token`, etc. |
-| **Noise Penalty** | 20 | Full score if no noise words (`example`, `dummy`, `changeme`…); 0 if detected |
-| **Key Length** | 15 | Longer keys are more likely real: 32+ chars = 15pt |
-| **Character Diversity** | 10 | Unique character ratio to total length |
+| **Noise handling** | 20 | Hard-reject on noise words (`example`, `dummy`, `changeme`, …) by default; allow-pattern override restores graduated scoring (clean 20 / noisy 5) |
+| **Key Length** | 15 | Proportional: (len/32 capped at 1) × 15, e.g. 16 chars ≈ 7.5 pts, 32+ chars = 15 pts |
+| **Character Diversity** | 10 | 0 pts for keys shorter than 12 chars; otherwise (unique/len ÷ 0.7 capped) × 10 |
 
 ### Severity Tiers
 
 | Score | Label |
-|---|---|
+| --- | --- |
 | 80–100 | 🔴 **CRITICAL** |
 | 60–79 | 🟠 **HIGH** |
 | 40–59 | 🟡 **MEDIUM** |
@@ -288,12 +295,12 @@ encrypt_output: false
 recent_repos_days: 7
 ```
 
-All config keys map to their CLI equivalents. CLI flags always take precedence over config file values.
+Most scan/output keys map to their CLI equivalents. CLI flags always take precedence over config file values. Exception: `--fail-on-findings` and `--fail-on-severity` are CLI-only (unknown YAML keys are ignored with a warning).
 
 ### Environment Variables
 
 | Variable | Required | Description |
-|---|---|---|
+| --- | --- | --- |
 | `GITHUB_TOKEN` | For GitHub modes | Personal access token with `repo` or `public_repo` scope ([how to create](#github-token-setup)) |
 | `OUTPUT_ENCRYPTION_KEY` | For encrypted output | Fernet key (32 base64-encoded bytes) |
 
@@ -302,6 +309,10 @@ Both can be loaded from a `.env` file in the project root.
 ---
 
 ## Output Formats
+
+### Logging
+
+Every scan appends to `output/audit.log` (created automatically alongside `output/`; nothing to configure) in addition to the format-specific results file below.
 
 ### JSON (`output/audit_results.json`)
 
@@ -325,15 +336,16 @@ Interactive report with:
 
 - **Severity bar charts** — visual breakdown by severity
 - **Sortable table** — click any column header to sort
-- **Live filter** — type to filter by provider, severity, repo, or path
-- **Expandable rows** — click to reveal commit hash, URL, timestamps, and raw key
+- **Live filter** — type to filter by provider, severity, repo, path, or masked key
+- **Expandable rows** — click to reveal commit hash, URL, timestamps, and raw key (raw key only when `--store-raw-keys` was used)
 - **Dark theme** — GitHub-dark inspired color scheme
 
 ### Encryption
 
-All formats support `--encrypt-output` using Fernet symmetric encryption:
+`--encrypt-output` hard-requires a Fernet key via `--encryption-key` (deprecated) or `OUTPUT_ENCRYPTION_KEY`. All formats support `--encrypt-output`:
 
 ```bash
+export OUTPUT_ENCRYPTION_KEY=$(python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
 python -m auditor --mode local --dir . --store-raw-keys --encrypt-output
 ```
 
@@ -362,11 +374,14 @@ docker run --rm -v "$(pwd):/work" credsclaw --mode local --dir /work --providers
 
 ### Docker Compose
 
+`docker-compose.yml` mounts `./docker-output:/work` with `env_file: .env` (requires a `.env` with `GITHUB_TOKEN`, see `.env.example`) and defaults to `--help`. Override the command to scan:
+
 ```bash
-docker-compose up
+docker compose run --rm auditor --mode local --dir /work --providers all
+docker compose run --rm -e GITHUB_TOKEN=ghp_... auditor --repo owner/repo --providers openai
 ```
 
-Output is written to `./docker-output/` by default.
+Output is written to `./docker-output/output/` by default (the `output/…` default resolved under the `/work` mount).
 
 ---
 
@@ -378,7 +393,7 @@ Generate a `.pre-commit-config.yaml` in one command:
 python -m auditor --generate-pre-commit-hook
 ```
 
-This creates a local pre-commit hook that runs a dry-run scan on all staged text files:
+This creates a local pre-commit hook that **fails the commit** whenever exposed credentials above the confidence threshold are found in the working tree (the `--generate-pre-commit-hook` template uses `--fail-on-findings`):
 
 ```yaml
 repos:
@@ -386,12 +401,14 @@ repos:
     hooks:
       - id: credsclaw
         name: CredsClaw
-        description: Scans staged files for exposed API keys and secrets
-        entry: python -m auditor --mode local --dir . --confidence-threshold 60.0 --dry-run
+        description: Scans for exposed API keys and secrets before commit
+        entry: python -m auditor --mode local --dir . --confidence-threshold 60.0 --fail-on-findings
         language: system
         types: [text]
         pass_filenames: false
 ```
+
+> **Note:** this repo's own checked-in `.pre-commit-config.yaml` is different — ruff + ruff-format + mypy + a credsclaw `--dry-run` (estimate-only, never blocks). In-repo, `--generate-pre-commit-hook` raises `FileExistsError` unless `--force`, and `--force` would overwrite the ruff/mypy hooks.
 
 ---
 
@@ -405,19 +422,24 @@ auditor/                        # Installable Python package
 ├── scoring.py                  # Shannon entropy, confidence scoring, severity, masking
 ├── scanner.py                  # APIAuditor class — all 4 scan modes
 ├── validator.py                # Live API validation for 11 providers
-├── exporter.py                 # JSON/CSV/TXT/HTML export + summary printer
+├── exporter.py                 # JSON/CSV/TXT/HTML/SARIF export + summary printer
 ├── tracker.py                  # Checkpoint/resume state management
 ├── cli.py                      # Argparse builder, config merge, pre-commit hook
 ├── config.py                   # YAML config file loader
 ├── rate_limiter.py             # Token-bucket rate limiter (+ exponential backoff) to prevent concurrent-task quota exhaustion
 └── utils.py                    # ISO-8601 parsing, UTC timestamp helper
 
-tests/                          # Module-scoped test files (71 tests)
+tests/                          # Module-scoped test files
+├── __init__.py                 # Test package init
 ├── test_patterns.py            # Pattern matching tests
 ├── test_scoring.py             # Scoring, masking, fingerprinting tests
 ├── test_config.py              # Config loading and merging tests
 ├── test_cli.py                 # CLI parsing and pre-commit hook tests
 ├── test_exporter.py            # HTML export and format tests
+├── test_fixes.py               # Regression tests for fixes and security patches
+├── test_main.py                # Entry-point / CI exit-code tests
+├── test_tracker.py             # Checkpoint/resume state tests
+├── test_utils.py               # Date-parsing and timestamp helper tests
 └── test_scanner.py             # Noise/allow/deny filtering, git history tests
 ```
 
@@ -462,14 +484,14 @@ flowchart TD
     X --> Y["ProgressTracker.save_progress()\n(at --checkpoint-interval)"]
 
     Y --> Z["asyncio.gather() completes"]
-    Z --> AA["export_results() / export_html_results()"]
-    AA --> AB["output/audit_results.{json,csv,txt,html}"]
+    Z --> AA["export_results() / export_html_results() / export_sarif_results()"]
+    AA --> AB["output/audit_results.{json,csv,txt,html,sarif}"]
 ```
 
 ### Key Design Decisions
 
 | Decision | Rationale |
-|---|---|
+| --- | --- |
 | **Shared validation sessions** | `batch_validate_keys()` creates one `aiohttp.ClientSession` per provider batch, eliminating TCP connection spam |
 | **`_run_item_loop` extracted** | Removes ~30 lines of duplicated loop/validation/save/log code from each scan method |
 | **Rate-limit sync on non-discovery scans** | `_fetch_initial_rate_limit()` called in `audit_api_keys()` and `audit_commit_messages()` ensures the token bucket starts at the correct level |
@@ -485,32 +507,40 @@ flowchart TD
 ```bash
 git clone <repo-url>
 cd credsclaw
-pip install -e .
-pip install pytest
+pip install -e .[dev]
+```
+
+### Lint & Typecheck
+
+```bash
+ruff check .
+ruff format --check .
+mypy auditor/
+pre-commit install
 ```
 
 ### Running Tests
 
 ```bash
-python -m pytest tests/ -v        # 71 tests
+python -m pytest tests/ -v        # coverage on by default via addopts (--cov=auditor); --no-cov to opt out
 python -m pytest tests/ -q        # compact output
 ```
 
-### Codebase Stats
+### Codebase Stats (approximate, as of Sep 2026)
 
 | Language | Files | Code | Comment |
-|---|---|---|---|
-| Python | 20 | ~2,800 | ~220 |
-| TOML | 1 | 21 | 0 |
-| Markdown | 1 | 0 | ~220 |
-| **Total** | **26** | **~2,821** | **~440** |
+| --- | --- | --- | --- |
+| Python | 23 | ~3,588 | ~202 |
+| TOML | 1 | 93 | 0 |
+| Markdown | 2 | 0 | ~640 |
+| **Total** | **26** | **~3,681** | **~842** |
 
 ### Project Layout Principles
 
 - **Single Responsibility** — each module has one concern (scoring, validation, export…)
-- **No Circular Imports** — dependency graph flows: `utils → patterns → scoring → scanner → exporter`
+- **No Circular Imports** — layered flow centered on `scanner` (`cli/config → scanner → validator/exporter/tracker`), with shared `utils`/`patterns`/`scoring` underneath
 - **Async First** — `asyncio.gather` + `Semaphore` for parallel provider scans
-- **Test Coverage** — all public methods tested, git history tests use real `git` commands
+- **Test Coverage** — broad module coverage (git history tests use real `git` commands); HTML export best covered, SARIF/summary paths thinner
 
 ---
 
@@ -536,13 +566,17 @@ Yes. Your `GITHUB_TOKEN` needs `repo` scope for private repos. Ensure it has the
 
 GitHub allows 10–30 requests per minute for search, depending on your token's level. The tool handles rate limiting with exponential backoff (up to 5 retries, max 300s wait). For large scans, use `--max-pages` to limit scope.
 
+**Q: How do I make CredsClaw fail a build or commit when secrets are found?**
+
+Use `--fail-on-findings` to exit with code 2 when any finding meets the confidence threshold, or `--fail-on-severity HIGH` to only fail when a finding reaches a given severity tier. Exit code 0 means the scan was clean. Gates are skipped under `--dry-run` (always exit 0 barring errors); unexpected errors exit 1. This powers the generated pre-commit hook and CI gatekeeper checks (e.g., GitHub Actions).
+
 **Q: Which providers were removed?**
 
 Stripe, Twilio, SendGrid, and Supabase were removed. If you need them back, see the git history for their patterns and validators.
 
 **Q: What are the new AI hosting providers?**
 
-Replicate (`r8_` + 37 chars), Groq (`gsk_`), OpenRouter (`sk-or-`), Together AI (`together_`), and Mistral AI (`mist_`) — all with live validation support.
+Replicate (`r8_` + 37–40 chars), Groq (`gsk_`), OpenRouter (`sk-or-`), Together AI (`together_`), and Mistral AI (`mist_`) — all with live validation support.
 
 ---
 
