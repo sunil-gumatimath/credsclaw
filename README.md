@@ -572,4 +572,4 @@ Replicate (`r8_` + 37–40 chars), Groq (`gsk_`), OpenRouter (`sk-or-`), Togethe
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
