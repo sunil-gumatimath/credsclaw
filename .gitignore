@@ -40,3 +40,7 @@ audit.log
 docker-output/
 output/
 nul
+
+# Tooling / external workspaces
+.ruff_cache/
+.delta/
