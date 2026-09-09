@@ -386,17 +386,6 @@ def export_sarif_results(
                                 },
                             }
                             for p in sorted({k["provider"] for k in progress.found_keys})
-                        ]
-                        or [
-                            {
-                                "id": "exposed-secret",
-                                "name": "ExposedSecret",
-                                "shortDescription": {"text": "Exposed API key or secret detected"},
-                                "fullDescription": {
-                                    "text": "A potential API key or secret was found in the codebase."
-                                },
-                                "defaultConfiguration": {"level": "error"},
-                            }
                         ],
                     }
                 },

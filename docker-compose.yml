@@ -3,7 +3,6 @@ services:
     build: .
     env_file:
       - .env
-    environment: {}
     volumes:
       # Persist checkpoint/results/logs on the host.
       - ./docker-output:/work

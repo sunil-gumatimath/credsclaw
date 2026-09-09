@@ -85,7 +85,6 @@ def _validate_numeric_args(args: argparse.Namespace, parser: argparse.ArgumentPa
 # ---------------------------------------------------------------------------
 # Argparse
 # ---------------------------------------------------------------------------
-DEFAULT_CONFIG_FILE_SHORT = DEFAULT_CONFIG_FILE  # re-export for convenience
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
