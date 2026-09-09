@@ -239,7 +239,7 @@ Deny is checked first and always wins. Allow narrows scope when set (candidate m
 | **GitHub** | `ghp_`, `gho_`, `ghs_`, `ghr_`, `ghu_`, `github_pat_` | ✓ |
 | **Slack** | `xox[baprsoecde]-` (incl. `xoxc-`/`xoxd-`) in `xoxX-<9–13 digits>-<9–13 digits>-<24+ chars>` form, `xapp-`/`xwfp-` (24+ chars), `hooks.slack.com` | ✓* |
 | **HuggingFace** | `hf_` | ✓ |
-| **Cloudflare** | `cfk_`, `cfut_`, `cfat_`, `cft_` (body allows `-`/`_` + mandatory 6–16 hex tail; `cft_` matched locally, not in GitHub code-search query) | ✓ |
+| **Cloudflare** | `cfk_`, `cfut_`, `cfat_`, `cft_` (body allows `-`/`_` + mandatory 6–16 hex tail; all four covered by code-search query) | ✓ |
 | **Azure** | Connection strings (`Endpoint=sb://` or `DefaultEndpointsProtocol`) | — |
 | **Replicate** | `r8_` + 37–40 alphanumerics (40–43 total) | ✓ |
 | **Groq** | `gsk_` | ✓ |

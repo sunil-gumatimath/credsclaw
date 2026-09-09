@@ -51,6 +51,15 @@ def test_noise_filter_rejects_placeholder_context(tmp_path):
     assert is_probable is False
 
 
+def test_noise_filter_rejects_test_fixtures(tmp_path):
+    args = _build_args()
+    tracker = ProgressTracker(checkpoint_file=str(tmp_path / "progress.json"), store_raw_keys=False)
+    auditor = APIAuditor("fake-token", RateLimiter(), tracker, args)
+    key = "sk-" + "a" * 48
+    assert auditor.is_probable_secret(key, f"key={key} # sk-test fixture")[0] is False
+    assert auditor.is_probable_secret(key, f"key={key} # redacted")[0] is False
+
+
 def test_allow_pattern_overrides_noise(tmp_path):
     args = _build_args(allow_patterns=[r"OPENAI_API_KEY"], deny_patterns=[])
     tracker = ProgressTracker(checkpoint_file=str(tmp_path / "progress.json"), store_raw_keys=False)

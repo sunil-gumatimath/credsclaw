@@ -1,9 +1,11 @@
 """Regex patterns for detecting API keys and secrets across 14 providers."""
 
 # ---------------------------------------------------------------------------
-# Provider key patterns (updated June 2026 — audit hardened)
+# Provider key patterns (updated June 2026 — audit hardened; Sep 2026 — search-query coverage, noise list, GitHub/Azure bounds)
 # ---------------------------------------------------------------------------
-ANTHROPIC_KEY_PATTERN = r"\bsk-ant-(?:api\d{2}|oat\d{2}|admin|auth\d{2}|[A-Za-z0-9_-]+)-[A-Za-z0-9_-]{40,}\b"
+ANTHROPIC_KEY_PATTERN = (
+    r"\bsk-ant-(?:api\d{2}|oat\d{2}|admin|auth\d{2}|[A-Za-z0-9_-]+)-[A-Za-z0-9_-]{40,}\b"
+)
 OPENAI_KEY_PATTERN = (
     r"\b(?:sk-(?:proj|svcacct|admin|svc|session)-[A-Za-z0-9_-]{20,80}T3BlbkFJ"
     r"[A-Za-z0-9_-]{20,80}|sk-[A-Za-z0-9_-]{48,51})\b"
@@ -15,7 +17,7 @@ AWS_ACCESS_KEY_PATTERN = (
     r"\b(?:AKIA|ASIA|ABIA|ACCA|APKA|AIDA|AROA|AIPA|ANPA|AGPA|ASCA)[0-9A-Z]{16}\b"
 )
 GITHUB_TOKEN_PATTERN = (
-    r"\b(?:ghp_[0-9a-zA-Z]{36,70}|gho_[0-9a-zA-Z]{36}|ghs_[0-9a-zA-Z]{36,200}|"
+    r"\b(?:ghp_[0-9a-zA-Z]{36,40}|gho_[0-9a-zA-Z]{36}|ghs_[0-9a-zA-Z]{36,76}|"
     r"ghr_[0-9a-zA-Z]{36}|ghu_[0-9a-zA-Z]{36}|"
     r"github_pat_[0-9a-zA-Z]{22}_[0-9a-zA-Z]{59})\b"
 )
@@ -28,9 +30,9 @@ HUGGINGFACE_KEY_PATTERN = r"\bhf_[A-Za-z0-9]{34,40}\b"
 CLOUDFLARE_TOKEN_PATTERN = r"\b(?:cfk_|cfut_|cfat_|cft_)[A-Za-z0-9_-]{30,50}[A-Fa-f0-9]{6,16}\b"
 AZURE_CONNECTION_STRING_PATTERN = (
     r"(?i)(?:Endpoint=sb://[^;]+;SharedAccessKeyName=[^;]+;"
-    r"SharedAccessKey=[A-Za-z0-9+/]+={0,2}(?=[^A-Za-z0-9+/=]|$)|"
+    r"SharedAccessKey=[A-Za-z0-9+/]{32,}={0,2}(?=[^A-Za-z0-9+/=]|$)|"
     r"DefaultEndpointsProtocol=https?;AccountName=[^;]+;"
-    r"AccountKey=[A-Za-z0-9+/]+={0,2}(?=[^A-Za-z0-9+/=]|$))"
+    r"AccountKey=[A-Za-z0-9+/]{32,}={0,2}(?=[^A-Za-z0-9+/=]|$))"
 )
 REPLICATE_API_TOKEN_PATTERN = r"\br8_[A-Za-z0-9]{37,40}\b"
 GROQ_API_KEY_PATTERN = r"\bgsk_[A-Za-z0-9_-]{30,64}\b"
@@ -50,9 +52,19 @@ NOISE_SUBSTRINGS = frozenset(
         "changeme",
         "your_key",
         "your-api-key",
+        "your_api_key",
         "fake",
         "mock",
         "testtest",
+        "sk-test",
+        "test_key",
+        "test-key",
+        "testkey",
+        "redacted",
+        "revoked",
+        "censored",
+        "masked",
+        "xxx",
         "xxxxx",
     }
 )
@@ -72,15 +84,23 @@ PROVIDER_CONFIGS = {
     "anthropic": ("Anthropic", "sk-ant-", ANTHROPIC_KEY_PATTERN),
     "openai": ("OpenAI", "sk-", OPENAI_KEY_PATTERN),
     "google": ("Google", "AIza OR ya29", GOOGLE_AI_KEY_PATTERN),
-    "aws": ("AWS", "AKIA", AWS_ACCESS_KEY_PATTERN),
+    "aws": (
+        "AWS",
+        "AKIA OR ASIA OR ABIA OR ACCA OR APKA OR AIDA OR AROA OR AIPA OR ANPA OR AGPA OR ASCA",
+        AWS_ACCESS_KEY_PATTERN,
+    ),
     "github": (
         "GitHub",
         "ghp_ OR github_pat_ OR gho_ OR ghs_ OR ghr_ OR ghu_",
         GITHUB_TOKEN_PATTERN,
     ),
-    "slack": ("Slack", "xoxb- OR xapp- OR xwfp- OR hooks.slack.com", SLACK_TOKEN_PATTERN),
+    "slack": (
+        "Slack",
+        "xox- OR xoxb- OR xoxp- OR xapp- OR xwfp- OR hooks.slack.com",
+        SLACK_TOKEN_PATTERN,
+    ),
     "huggingface": ("HuggingFace", "hf_", HUGGINGFACE_KEY_PATTERN),
-    "cloudflare": ("Cloudflare", "cfk_ OR cfut_ OR cfat_", CLOUDFLARE_TOKEN_PATTERN),
+    "cloudflare": ("Cloudflare", "cfk_ OR cfut_ OR cfat_ OR cft_", CLOUDFLARE_TOKEN_PATTERN),
     "azure": ("Azure", "Endpoint=sb OR DefaultEndpointsProtocol", AZURE_CONNECTION_STRING_PATTERN),
     "replicate": ("Replicate", "r8_", REPLICATE_API_TOKEN_PATTERN),
     "groq": ("Groq", "gsk_", GROQ_API_KEY_PATTERN),

@@ -14,6 +14,7 @@ from auditor import (
     MISTRAL_API_KEY_PATTERN,
     OPENAI_KEY_PATTERN,
     OPENROUTER_API_KEY_PATTERN,
+    PROVIDER_CONFIGS,
     REPLICATE_API_TOKEN_PATTERN,
     SLACK_TOKEN_PATTERN,
     TOGETHER_API_KEY_PATTERN,
@@ -70,6 +71,43 @@ def test_invalid_aws_key():
         assert len(re.findall(AWS_ACCESS_KEY_PATTERN, key)) == 0
 
 
+def test_aws_all_prefixes_match():
+    for prefix in [
+        "AKIA",
+        "ASIA",
+        "ABIA",
+        "ACCA",
+        "APKA",
+        "AIDA",
+        "AROA",
+        "AIPA",
+        "ANPA",
+        "AGPA",
+        "ASCA",
+    ]:
+        assert len(re.findall(AWS_ACCESS_KEY_PATTERN, prefix + "A" * 16)) == 1
+
+
+def test_search_prefixes_cover_matchable_prefixes():
+    aws_query = PROVIDER_CONFIGS["aws"][1]
+    for prefix in [
+        "AKIA",
+        "ASIA",
+        "ABIA",
+        "ACCA",
+        "APKA",
+        "AIDA",
+        "AROA",
+        "AIPA",
+        "ANPA",
+        "AGPA",
+        "ASCA",
+    ]:
+        assert prefix in aws_query
+    assert "cft_" in PROVIDER_CONFIGS["cloudflare"][1]
+    assert "xoxp-" in PROVIDER_CONFIGS["slack"][1]
+
+
 # ~~~ GitHub ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 def test_valid_github_token():
     tokens = [
@@ -81,6 +119,15 @@ def test_valid_github_token():
     ]
     for token in tokens:
         assert len(re.findall(GITHUB_TOKEN_PATTERN, token)) == 1
+    assert len(re.findall(GITHUB_TOKEN_PATTERN, "ghu_" + "g" * 36)) == 1
+
+
+def test_github_token_boundaries():
+    assert len(re.findall(GITHUB_TOKEN_PATTERN, "ghp_" + "a" * 36)) == 1
+    assert len(re.findall(GITHUB_TOKEN_PATTERN, "ghp_" + "a" * 40)) == 1
+    assert len(re.findall(GITHUB_TOKEN_PATTERN, "ghp_" + "a" * 41)) == 0
+    assert len(re.findall(GITHUB_TOKEN_PATTERN, "ghs_" + "c" * 76)) == 1
+    assert len(re.findall(GITHUB_TOKEN_PATTERN, "ghs_" + "c" * 77)) == 0
 
 
 # ~~~ Slack ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -141,5 +188,16 @@ def test_valid_mistral_key():
 
 # ~~~ Azure ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 def test_valid_azure_connection_string():
-    key = "Endpoint=sb://my-namespace.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=ABCDEF12345+/="
+    key = (
+        "Endpoint=sb://my-namespace.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey="
+        + "A" * 43
+        + "="
+    )
     assert len(re.findall(AZURE_CONNECTION_STRING_PATTERN, key)) == 1
+    storage = "DefaultEndpointsProtocol=https;AccountName=mystorage;AccountKey=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefgh0123456789+/=="
+    assert len(re.findall(AZURE_CONNECTION_STRING_PATTERN, storage)) == 1
+
+
+def test_azure_rejects_short_key_material():
+    short = "Endpoint=sb://ns.servicebus.windows.net/;SharedAccessKeyName=Root;SharedAccessKey=A="
+    assert len(re.findall(AZURE_CONNECTION_STRING_PATTERN, short)) == 0
