@@ -114,10 +114,9 @@ async def main() -> None:
                     )
                     return
 
-            # Generate suffix list
-            # A query suffix is either derived from:
+            # Generate suffix list. A query suffix is either derived from:
             # 1. A single repo: `repo:owner/repo`
-            # 2. Chunked discovered repos: `(repo:A OR repo:B OR ...)`
+            # 2. One query per discovered repo (same `repo:` form)
             # 3. Nothing (global search)
             suffix_chunks = []
             if args.repo:
