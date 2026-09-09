@@ -25,6 +25,7 @@
 - [Architecture](#architecture)
 - [Development](#development)
 - [FAQ](#faq)
+- [License](#license)
 
 ---
 
@@ -224,7 +225,7 @@ python -m auditor --mode git-history --dir ./my-repo --providers github,slack
 
 ### Filtering precedence (`--allow-patterns` / `--deny-patterns`)
 
-Deny is checked first and always wins. Allow narrows scope when set (candidate must match it) and is the only way to surface noise-flagged candidates — those then score 5 pts on the noise factor instead of being dropped. Allow-patterns cannot rescue low-confidence non-noisy keys (still gated by `--confidence-threshold`).
+Deny is checked first and always wins. Allow narrows scope when set (candidate must match it) and is the only way to surface noise-flagged candidates — those then score 5 pts on the noise factor instead of being dropped. Allow-matches bypass both the noise hard-reject and the `--confidence-threshold` gate (any allow-matched candidate is reported, scored normally).
 
 ---
 
@@ -236,11 +237,11 @@ Deny is checked first and always wins. Allow narrows scope when set (candidate m
 | **OpenAI** | `sk-` (classic, allows `-`/`_`), `sk-proj-`, `sk-svcacct-`, `sk-admin-`, `sk-svc-`, `sk-session-` (with `T3BlbkFJ` marker) | ✓ |
 | **Google AI** | `AIza...`, `AQ....`, `ya29....` | — |
 | **AWS** | 11 prefixes: `AKIA`, `ASIA`, `ABIA`, `ACCA`, `APKA`, `AIDA`, `AROA`, `AIPA`, `ANPA`, `AGPA`, `ASCA` | — |
-| **GitHub** | `ghp_`, `gho_`, `ghs_`, `ghr_`, `ghu_`, `github_pat_` | ✓ |
+| **GitHub** | `ghp_` 36–40, `ghs_` 36–76, `gho_`/`ghr_`/`ghu_` fixed 36, `github_pat_` 22+59 (see `auditor/patterns.py`) | ✓ |
 | **Slack** | `xox[baprsoecde]-` (incl. `xoxc-`/`xoxd-`) in `xoxX-<9–13 digits>-<9–13 digits>-<24+ chars>` form, `xapp-`/`xwfp-` (24+ chars), `hooks.slack.com` | ✓* |
 | **HuggingFace** | `hf_` | ✓ |
 | **Cloudflare** | `cfk_`, `cfut_`, `cfat_`, `cft_` (body allows `-`/`_` + mandatory 6–16 hex tail; all four covered by code-search query) | ✓ |
-| **Azure** | Connection strings (`Endpoint=sb://` or `DefaultEndpointsProtocol`) | — |
+| **Azure** | Connection strings (`Endpoint=sb://` or `DefaultEndpointsProtocol`; key material 32+ base64 chars) | — |
 | **Replicate** | `r8_` + 37–40 alphanumerics (40–43 total) | ✓ |
 | **Groq** | `gsk_` | ✓ |
 | **OpenRouter** | `sk-or-` | ✓ |
@@ -462,19 +463,15 @@ flowchart TD
     subgraph Detect["3 · Detect (per provider)"]
         T1 & T2 & T3 & T4 & T5 --> D1["Regex extract candidates"]
         D1 --> D2{"deny match? → drop"}
-        D2 --> D3{"noise word? → drop (allow-pattern overrides)"}
+        D2 --> D3{"noise word? → drop unless allow-matched"}
         D3 --> D4["Score 0-100: entropy 30 + context 25 + noise 20 + length 15 + diversity 10"]
-        D4 --> D5{"Above --confidence-threshold?"}
+        D4 --> D5{"Above threshold? (allow-matches skip gate)"}
     end
     subgraph Confirm["4 · Confirm and export"]
         D5 -- Yes --> C1["--validate? live API check: valid / dead / unknown"]
         D5 -- No --> C4["Discard"]
         C1 --> C2["Export json/csv/txt/html/sarif + audit.log"]
         C2 --> C3{"Exit: 0 clean, 2 fail-on hit, 1 error"}
-    end
-    subgraph Notify["5 · Notify"]
-        C3 --> N1["Masked finding to repo owner (advisory or issue)"]
-        N1 --> N2["Owner revokes key + purges history"]
     end
 ```
 
@@ -504,7 +501,7 @@ pip install -e .[dev]
 
 ```bash
 ruff check .
-ruff format --check .
+ruff format --check .  # local / pre-commit only, not gated in CI
 mypy auditor/
 pre-commit install
 ```
@@ -522,8 +519,8 @@ python -m pytest tests/ -q        # compact output
 | --- | --- | --- | --- |
 | Python | 23 | ~3,588 | ~202 |
 | TOML | 1 | 93 | 0 |
-| Markdown | 2 | 0 | ~640 |
-| **Total** | **26** | **~3,681** | **~842** |
+| Markdown | 1 | 0 | ~640 |
+| **Total** | **25** | **~3,681** | **~842** |
 
 ### Project Layout Principles
 
