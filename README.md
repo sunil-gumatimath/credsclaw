@@ -443,51 +443,6 @@ tests/                          # Module-scoped test files
 └── test_scanner.py             # Noise/allow/deny filtering, git history tests
 ```
 
-### Data Flow
-
-```mermaid
-flowchart TD
-    A[".env → load_dotenv()"] --> B["YAML config → load_config()"]
-    B --> C["CLI + config → parse_args()"]
-    C --> D["ProgressTracker ← checkpoint/resume"]
-    D --> E["RateLimiter ← init token bucket"]
-
-    E --> F{"recent-repos-days?"}
-    F -- Yes --> G["discover_recent_repositories()\n(calls _fetch_initial_rate_limit() internally)"]
-    G --> H["Chunk repos (groups of 5)"]
-    H --> I["Build query suffix per chunk\n(+ extension filter if --extensions)"]
-
-    F -- No --> I
-    I --> J["Expand 'all' providers →\nselected provider list"]
-
-    J --> K["async with APIAuditor(...) as auditor:"]
-    K --> L["For each (provider, suffix_chunk):\n create asyncio task"]
-
-    L --> M{"Mode?"}
-    M -- code --> N["audit_api_keys()"]
-    M -- commits --> O["audit_commit_messages()"]
-    M -- local --> P["audit_local_directory()"]
-    M -- git-history --> Q["audit_git_history()"]
-
-    N --> R["_fetch_initial_rate_limit()"]
-    O --> R
-    R --> S["rate_limiter.acquire()"]
-    S --> T["GitHub API search request"]
-    T --> U["Filter results (stars, language, date)"]
-
-    P --> V["_run_item_loop() ← semaphore"]
-    Q --> V
-    U --> V
-
-    V --> W["extract_candidates() ← regex\nconfidence scoring\nallow/deny filtering"]
-    W --> X["batch_validate_keys()\n(shared aiohttp session)"]
-    X --> Y["ProgressTracker.save_progress()\n(at --checkpoint-interval)"]
-
-    Y --> Z["asyncio.gather() completes"]
-    Z --> AA["export_results() / export_html_results() / export_sarif_results()"]
-    AA --> AB["output/audit_results.{json,csv,txt,html,sarif}"]
-```
-
 ### Process Flowchart
 
 ```mermaid
