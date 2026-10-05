@@ -47,12 +47,8 @@ def test_openai_project_keys_with_hyphens_and_underscores():
     """OpenAI project keys containing hyphens and underscores must match."""
     # Assembled from fragments: a contiguous literal here is a syntactically
     # valid key, which GitHub push protection correctly refuses to accept.
-    proj_key = (
-        "sk-proj-abc_def-12345678901234567890"
-        "T3Bl"
-        "bkFJ"
-        "xyz_987-12345678901234567890"
-    )
+    head, marker, tail = "sk-proj-abc_def-12345678901234567890", "T3Bl", "bkFJ"
+    proj_key = head + marker + tail + "xyz_987-12345678901234567890"
     match = re.search(OPENAI_KEY_PATTERN, proj_key)
     assert match is not None
     assert match.group(0) == proj_key

@@ -44,3 +44,7 @@ nul
 # Tooling / external workspaces
 .ruff_cache/
 .delta/
+
+# uv lockfile: this project is pip/setuptools-based (see pyproject.toml);
+# uv is only used as a local runner, so the lock is not tracked.
+uv.lock

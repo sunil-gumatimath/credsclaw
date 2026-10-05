@@ -38,8 +38,8 @@
 | **14 provider patterns** | OpenAI, Anthropic, Google, AWS, GitHub, Slack, HuggingFace, Cloudflare, Azure, Replicate, Groq, OpenRouter, Together AI, Mistral AI |
 | **Confidence scoring** | Multi-factor analysis: Shannon entropy, context keywords, noise handling, length, character diversity |
 | **Severity tiers** | CRITICAL (80+), HIGH (60-79), MEDIUM (40-59), LOW (<40) |
-| **Live validation** | Ping provider APIs to confirm whether discovered keys are still active |
-| **Deduplication** | SHA-256 fingerprinting prevents the same key from being reported twice |
+| **Live validation** | Ping provider APIs to confirm whether discovered keys are still active; a reused secret is validated once and the verdict shared across its locations |
+| **Deduplication** | SHA-256 fingerprinting reports a secret once; every additional location is recorded in `locations` with an `occurrences` count |
 | **Checkpoint / Resume** | Save progress mid-scan and resume later without re-scanning |
 | **HTML reports** | Interactive, sortable, filterable HTML reports with severity bars |
 | **Encrypted output** | Fernet-symmetric encryption for sensitive results |
@@ -156,7 +156,7 @@ python -m auditor --repo owner/repo --providers all --validate
 | `--fail-on-severity` | (unset) | Exit with code 2 if findings reach this tier: `LOW`, `MEDIUM`, `HIGH`, `CRITICAL` |
 | `--config` | `auditor.yaml` | YAML configuration file path |
 | `--recent-repos-days` | (empty) | Discover repos pushed to in last N days (mode: `code`/`commits` only) |
-| `--resume` | off | Continue from previous checkpoint (without `--resume`/`--since-checkpoint`, an existing checkpoint file is deleted at startup) |
+| `--resume` | off | Continue from previous checkpoint (without `--resume`/`--since-checkpoint`, an existing checkpoint file is deleted at startup; requesting a resume with no checkpoint warns and starts fresh) |
 | `--checkpoint-file` | `output/progress.json` | Path to checkpoint file |
 | `--since-checkpoint` | off | Only process items newer than checkpoint timestamp |
 | `--checkpoint-interval` | `25` | Save checkpoint every N processed items |
@@ -227,28 +227,36 @@ python -m auditor --mode git-history --dir ./my-repo --providers github,slack
 
 Deny is checked first and always wins. Allow narrows scope when set (candidate must match it) and is the only way to surface noise-flagged candidates — those then score 5 pts on the noise factor instead of being dropped. Allow-matches bypass both the noise hard-reject and the `--confidence-threshold` gate (any allow-matched candidate is reported, scored normally).
 
+Noise detection is scoped to **the line containing the key**, not the whole ±80-character context window. A doc sample on an adjacent line (`AWS_KEY = "AKIAIOSFODNN7EXAMPLE"`) therefore no longer suppresses a genuine key sitting on the line above it, while a real placeholder on the key's own line (`OPENAI_API_KEY = "sk-…" # example`) is still rejected.
+
+Redaction markers are handled separately from the noise word list: an all-`x` or all-`*` value (`sk-xxxx…`) is always rejected, but a bare `xxx` substring is not — it collides with genuine random secrets roughly once in 2,000 AWS-style keys.
+
 ---
 
 ## Supported Providers
 
+Formats verified against vendor documentation, October 2026. `tests/test_provider_formats.py` pins every row below with a positive fixture, a negative fixture, and a cross-provider non-overlap assertion.
+
 | Provider | Pattern Prefix(es) | Live Validation |
 | --- | --- | --- |
 | **Anthropic** | `sk-ant-apiXX-`, `sk-ant-oatXX-`, `sk-ant-admin-`, `sk-ant-authXX-` (+ generic segments; 40+ char tail required) | ✓ |
-| **OpenAI** | `sk-` (classic, allows `-`/`_`), `sk-proj-`, `sk-svcacct-`, `sk-admin-`, `sk-svc-`, `sk-session-` (with `T3BlbkFJ` marker) | ✓ |
-| **Google AI** | `AIza...`, `AQ....`, `ya29....` | — |
-| **AWS** | 11 prefixes: `AKIA`, `ASIA`, `ABIA`, `ACCA`, `APKA`, `AIDA`, `AROA`, `AIPA`, `ANPA`, `AGPA`, `ASCA` | — |
-| **GitHub** | `ghp_` 36–40, `ghs_` 36–76, `gho_`/`ghr_`/`ghu_` fixed 36, `github_pat_` 22+59 (see `auditor/patterns.py`) | ✓ |
-| **Slack** | `xox[baprsoecde]-` (incl. `xoxc-`/`xoxd-`) in `xoxX-<9–13 digits>-<9–13 digits>-<24+ chars>` form, `xapp-`/`xwfp-` (24+ chars), `hooks.slack.com` | ✓* |
-| **HuggingFace** | `hf_` | ✓ |
-| **Cloudflare** | `cfk_`, `cfut_`, `cfat_`, `cft_` (body allows `-`/`_` + mandatory 6–16 hex tail; all four covered by code-search query) | ✓ |
-| **Azure** | Connection strings (`Endpoint=sb://` or `DefaultEndpointsProtocol`; key material 32+ base64 chars) | — |
-| **Replicate** | `r8_` + 37–40 alphanumerics (40–43 total) | ✓ |
-| **Groq** | `gsk_` | ✓ |
-| **OpenRouter** | `sk-or-` | ✓ |
-| **Together AI** | `together_` (allows `-`/`_`) | ✓ |
-| **Mistral AI** | `mist_` (allows `-`/`_`) | ✓ |
+| **OpenAI** | `sk-` (classic 48–51, allows `-`/`_`, excludes `sk-ant-`), `sk-proj-`, `sk-svcacct-`, `sk-admin-`, `sk-svc-`, `sk-session-` (with `T3BlbkFJ` marker, tails up to 120 chars to cover ~155-char project keys) | ✓ |
+| **Google AI** | `AIza` + 35, `AQ.` + 35, `ya29.` + 30 | — |
+| **AWS** | 11 prefixes: `AKIA`, `ASIA`, `ABIA`, `ACCA`, `APKA`, `AIDA`, `AROA`, `AIPA`, `ANPA`, `AGPA`, `ASCA`, each + 16 uppercase alphanumerics | — |
+| **GitHub** | `ghp_` 36–40, `ghs_` 36–76, `gho_`/`ghr_`/`ghu_` fixed 36, `github_pat_` 22–30 + `_` + 59–100 | ✓ |
+| **Slack** | Classic `xox[baprsoecde]-` three-field tokens, app-level `xoxa-<app>-<team>-<app>-<secret>`, `xapp-`/`xwfp-` (24+ chars), `hooks.slack.com` webhooks | ✓* |
+| **HuggingFace** | `hf_` + 34–64 | ✓ |
+| **Cloudflare** | 2026 scannable prefixes `cfk_`, `cfut_`, `cfat_` (+ legacy `cft_`): 30–50 char body + mandatory 6–16 hex checksum | ✓ |
+| **Azure** | Connection strings (`Endpoint=sb://` or `DefaultEndpointsProtocol`; key material 32+ base64 chars with optional padding) | — |
+| **Replicate** | `r8_` + 37–40 alphanumerics | ✓ |
+| **Groq** | `gsk_` + 30–64 | ✓ |
+| **OpenRouter** | `sk-or-` + 30–70 (covers `sk-or-v1-`) | ✓ |
+| **Together AI** | `together_` + 30–64 | ✓ |
+| **Mistral AI** | `mist_` + 30–64 | ✓ |
 
-Live validatable providers ping their respective APIs to confirm whether the discovered key is still active. \*Slack webhook URLs (`hooks.slack.com`) are detected but never live-validated. All patterns enforce minimum lengths — see `auditor/patterns.py` for exact shapes.
+Live validatable providers ping their respective APIs to confirm whether the discovered key is still active. \*Slack webhook URLs (`hooks.slack.com`) are detected but never live-validated. Google AI, AWS, and Azure have no lightweight validation endpoint (an AWS access key ID can't be verified without its secret), so `--validate` skips them instead of issuing a request that can only return "unknown" — see `auditor.validator.NON_VALIDATABLE_PROVIDERS`.
+
+A secret found in several places is validated **once**; the verdict is written to every location it appears in.
 
 ---
 
@@ -262,7 +270,7 @@ Each potential secret is scored from **0–100** using a multi-factor model. The
 | --- | --- | --- |
 | **Shannon Entropy** | 30 | Higher randomness = more likely a real key |
 | **Context Keywords** | 25 | Surrounding text contains `api_key`, `secret`, `token`, etc. |
-| **Noise handling** | 20 | Hard-reject on noise words (`example`, `dummy`, `changeme`, …) by default; allow-pattern override restores graduated scoring (clean 20 / noisy 5) |
+| **Noise handling** | 20 | Hard-reject on noise words (`example`, `dummy`, `changeme`, …) found **on the key's own line**, plus unmistakably redacted values (all-`x`, all-`*`); allow-pattern override restores graduated scoring (clean 20 / noisy 5) |
 | **Key Length** | 15 | Proportional: (len/32 capped at 1) × 15, e.g. 16 chars ≈ 7.5 pts, 32+ chars = 15 pts |
 | **Character Diversity** | 10 | 0 pts for keys shorter than 12 chars; otherwise (unique/len ÷ 0.7 capped) × 10 |
 
@@ -297,6 +305,8 @@ recent_repos_days: 7
 ```
 
 Most scan/output keys map to their CLI equivalents. CLI flags always take precedence over config file values. Exception: `--fail-on-findings` and `--fail-on-severity` are CLI-only (unknown YAML keys are ignored with a warning).
+
+Boolean keys (`validate`, `dry_run`, `resume`, `since_checkpoint`, `no_ssl_verify`, `store_raw_keys`, `encrypt_output`) are coerced to real booleans, so `validate: no` disables validation instead of being read as the truthy string `"no"`. Accepted forms: `true`/`false`, `yes`/`no`, `on`/`off`, `1`/`0`, any case. A value that can't be interpreted is logged as an error and the CLI default is kept.
 
 ### Environment Variables
 
@@ -422,7 +432,7 @@ auditor/                        # Installable Python package
 ├── patterns.py                 # 14 regex patterns, noise list, provider registry
 ├── scoring.py                  # Shannon entropy, confidence scoring, severity, masking
 ├── scanner.py                  # APIAuditor class — all 4 scan modes
-├── validator.py                # Live API validation for 11 providers
+├── validator.py                # Live API validation (shared bearer helper + per-provider verdicts)
 ├── exporter.py                 # JSON/CSV/TXT/HTML/SARIF export + summary printer
 ├── tracker.py                  # Checkpoint/resume state management
 ├── cli.py                      # Argparse builder, config merge, pre-commit hook
@@ -433,15 +443,16 @@ auditor/                        # Installable Python package
 tests/                          # Module-scoped test files
 ├── __init__.py                 # Test package init
 ├── test_patterns.py            # Pattern matching tests
+├── test_provider_formats.py    # Per-provider format fixtures + cross-provider overlap
 ├── test_scoring.py             # Scoring, masking, fingerprinting tests
-├── test_config.py              # Config loading and merging tests
+├── test_config.py              # Config loading, merging, and boolean coercion
 ├── test_cli.py                 # CLI parsing and pre-commit hook tests
 ├── test_exporter.py            # HTML export and format tests
 ├── test_fixes.py               # Regression tests for fixes and security patches
 ├── test_main.py                # Entry-point / CI exit-code tests
-├── test_tracker.py             # Checkpoint/resume state tests
+├── test_tracker.py             # Checkpoint/resume state, dedupe, occurrence tests
 ├── test_utils.py               # Date-parsing and timestamp helper tests
-└── test_scanner.py             # Noise/allow/deny filtering, git history tests
+└── test_scanner.py             # Noise/allow/deny filtering, checkpoints, git history
 ```
 
 ### Audit Flow
@@ -513,21 +524,25 @@ python -m pytest tests/ -v        # coverage on by default via addopts (--cov=au
 python -m pytest tests/ -q        # compact output
 ```
 
-### Codebase Stats (approximate, as of Sep 2026)
+### Continuous Integration
+
+`.github/workflows/ci.yml` runs on every push and pull request across Python 3.11–3.13: `ruff check`, `ruff format --check`, `mypy auditor/`, and `pytest` with coverage (published to Codecov). A second job runs a CredsClaw `--dry-run` self-scan of the working tree, so the repo dogfoods the tool it ships.
+
+### Codebase Stats (approximate, as of Oct 2026)
 
 | Language | Files | Code | Comment |
 | --- | --- | --- | --- |
-| Python | 23 | ~3,588 | ~202 |
-| TOML | 1 | 93 | 0 |
-| Markdown | 1 | 0 | ~640 |
-| **Total** | **25** | **~3,681** | **~842** |
+| Python | 24 | ~4,348 | ~235 |
+| TOML | 1 | 77 | 0 |
+| Markdown | 1 | 0 | ~655 |
+| **Total** | **26** | **~4,425** | **~890** |
 
 ### Project Layout Principles
 
 - **Single Responsibility** — each module has one concern (scoring, validation, export…)
 - **No Circular Imports** — layered flow centered on `scanner` (`cli/config → scanner → validator/exporter/tracker`), with shared `utils`/`patterns`/`scoring` underneath
 - **Async First** — `asyncio.gather` + `Semaphore` for parallel provider scans
-- **Test Coverage** — broad module coverage (git history tests use real `git` commands); HTML export best covered, SARIF/summary paths thinner
+- **Test Coverage** — 224 tests, ~60% overall. `patterns.py` and `tracker.py` are near-full; `validator.py` (~28%), `scanner.py` (~49%), and `exporter.py` (~41%) remain thin, since exercising live-validation paths needs mocked HTTP and the GitHub search paths need mocked API responses.
 
 ---
 

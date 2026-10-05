@@ -49,7 +49,18 @@ def _secure_write(path: Path, data: bytes) -> None:
         os.chmod(path, 0o600)
 
 
-CSV_FIELDS = ["provider", "severity", "confidence", "repo", "path", "url", "key_masked", "key_hash", "valid", "timestamp"]
+CSV_FIELDS = [
+    "provider",
+    "severity",
+    "confidence",
+    "repo",
+    "path",
+    "url",
+    "key_masked",
+    "key_hash",
+    "valid",
+    "timestamp",
+]
 
 
 def export_results(
@@ -86,7 +97,11 @@ def export_results(
         for row in progress.found_keys:
             sanitized = {}
             for k, v in row.items():
-                if isinstance(v, str) and v.lstrip() and v.lstrip()[0] in ("=", "+", "-", "@", "\t", "\r"):
+                if (
+                    isinstance(v, str)
+                    and v.lstrip()
+                    and v.lstrip()[0] in ("=", "+", "-", "@", "\t", "\r")
+                ):
                     sanitized[k] = "'" + v
                 else:
                     sanitized[k] = v
@@ -124,7 +139,9 @@ def export_results(
         _secure_write(output_path, raw_bytes)
         logger.info("Results exported to %s", output_path)
         if any("key" in k for k in progress.found_keys):
-            logger.warning("Raw secrets are stored in %s — protect this file (chmod 600)", output_path)
+            logger.warning(
+                "Raw secrets are stored in %s — protect this file (chmod 600)", output_path
+            )
 
 
 def export_html_results(
@@ -141,7 +158,12 @@ def export_html_results(
     # Properly escape JSON for embedding in <script> block
     keys_json = json.dumps(progress.found_keys, indent=2, ensure_ascii=False)
     # Escape HTML-sensitive chars to prevent script injection
-    keys_json = keys_json.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026").replace("</", r"<\/")
+    keys_json = (
+        keys_json.replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("&", "\\u0026")
+        .replace("</", r"<\/")
+    )
     total = len(progress.found_keys)
 
     sev_counts: dict[str, int] = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
