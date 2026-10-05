@@ -89,9 +89,18 @@ async def main() -> None:
             if not token:
                 raise ValueError("GitHub token is required")
 
-        if not args.resume and not args.since_checkpoint and Path(args.checkpoint_file).exists():
+        checkpoint_path = Path(args.checkpoint_file)
+        if not args.resume and not args.since_checkpoint and checkpoint_path.exists():
             logger.warning("Removing existing checkpoint file: %s", args.checkpoint_file)
-            Path(args.checkpoint_file).unlink()
+            checkpoint_path.unlink()
+        elif (args.resume or args.since_checkpoint) and not checkpoint_path.exists():
+            # Silently starting fresh here looks like a successful resume while
+            # re-scanning everything from the beginning.
+            logger.warning(
+                "--resume/--since-checkpoint requested but no checkpoint found at %s; "
+                "starting a fresh scan",
+                args.checkpoint_file,
+            )
 
         progress = ProgressTracker(args.checkpoint_file, store_raw_keys=args.store_raw_keys)
         rate_limiter = RateLimiter()
@@ -239,5 +248,17 @@ async def main() -> None:
         sys.exit(1)
 
 
-if __name__ == "__main__":
+def run() -> None:
+    """Synchronous console-script entry point.
+
+    ``[project.scripts]`` must point at a *sync* callable: setuptools invokes
+    ``sys.exit(main())``, so pointing it straight at the coroutine function
+    ``main`` would create a coroutine that is never awaited and exit without
+    doing any work. This wrapper keeps the async implementation testable
+    (``await main()``) while giving the CLI a real callable to run.
+    """
     asyncio.run(main())
+
+
+if __name__ == "__main__":
+    run()

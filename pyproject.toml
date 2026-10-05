@@ -45,8 +45,8 @@ dev = [
 ]
 
 [project.scripts]
-credsclaw = "auditor.__main__:main"
-auditor = "auditor.__main__:main"
+credsclaw = "auditor.__main__:run"
+auditor = "auditor.__main__:run"
 [tool.setuptools.packages.find]
 include = ["auditor*"]
 
