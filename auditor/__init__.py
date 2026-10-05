@@ -24,14 +24,15 @@ from auditor.cli import (
     parse_csv_arg,
 )
 from auditor.config import (
+    BOOLEAN_CONFIG_KEYS,
     CONFIG_ARG_MAP,
     DEFAULT_CONFIG_FILE,
     PLURAL_LIST_KEYS,
     apply_config_to_parser,
+    coerce_bool,
     load_config,
 )
 from auditor.exporter import (
-    _severity_to_sarif_level,
     export_html_results,
     export_results,
     export_sarif_results,
@@ -55,6 +56,7 @@ from auditor.patterns import (
     OPENAI_KEY_PATTERN,
     OPENROUTER_API_KEY_PATTERN,
     PROVIDER_CONFIGS,
+    REDACTION_MARKER_PATTERNS,
     REPLICATE_API_TOKEN_PATTERN,
     SLACK_TOKEN_PATTERN,
     TOGETHER_API_KEY_PATTERN,
@@ -72,7 +74,11 @@ from auditor.scoring import (
 )
 from auditor.tracker import ProgressTracker
 from auditor.utils import parse_iso8601, safe_utc_now
-from auditor.validator import VALIDATION_MAP, create_validator_session
+from auditor.validator import (
+    NON_VALIDATABLE_PROVIDERS,
+    VALIDATION_MAP,
+    create_validator_session,
+)
 
 __all__ = [
     # patterns
@@ -91,6 +97,7 @@ __all__ = [
     "TOGETHER_API_KEY_PATTERN",
     "MISTRAL_API_KEY_PATTERN",
     "NOISE_SUBSTRINGS",
+    "REDACTION_MARKER_PATTERNS",
     "PROVIDER_CONFIGS",
     "VALIDATABLE_PROVIDERS",
     "DEFAULT_VALIDATION_TIMEOUT",
@@ -111,8 +118,10 @@ __all__ = [
     "DEFAULT_CONFIG_FILE",
     "CONFIG_ARG_MAP",
     "PLURAL_LIST_KEYS",
+    "BOOLEAN_CONFIG_KEYS",
     "load_config",
     "apply_config_to_parser",
+    "coerce_bool",
     # cli
     "parse_csv_arg",
     "get_github_token",
@@ -123,11 +132,11 @@ __all__ = [
     "ProgressTracker",
     "RateLimiter",
     "VALIDATION_MAP",
+    "NON_VALIDATABLE_PROVIDERS",
     "create_validator_session",
     "APIAuditor",
     "export_results",
     "export_html_results",
     "export_sarif_results",
-    "_severity_to_sarif_level",
     "print_summary",
 ]

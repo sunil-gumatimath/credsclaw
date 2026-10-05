@@ -19,7 +19,7 @@ except ImportError:
 from datetime import UTC
 
 from auditor.cli import parse_csv_arg
-from auditor.patterns import NOISE_SUBSTRINGS
+from auditor.patterns import NOISE_SUBSTRINGS, REDACTION_MARKER_PATTERNS
 from auditor.rate_limiter import SEARCH_QUOTA, RateLimiter
 from auditor.scoring import (
     calculate_confidence_score,
@@ -29,7 +29,11 @@ from auditor.scoring import (
 )
 from auditor.tracker import ProgressTracker
 from auditor.utils import parse_iso8601, safe_utc_now
-from auditor.validator import VALIDATION_MAP, create_validator_session
+from auditor.validator import (
+    NON_VALIDATABLE_PROVIDERS,
+    VALIDATION_MAP,
+    create_validator_session,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +42,16 @@ MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024  # Skip files larger than 5 MB (avoid OOM)
 CONTEXT_WINDOW = 80  # Characters of context around a match (was 40; S-MED-02)
 VALIDATION_CONCURRENCY = 5  # Max parallel validation requests (V-MED-04)
 _PATTERN_CACHE: dict[str, re.Pattern[str]] = {}
+
+
+def _is_redaction_marker(key: str) -> bool:
+    """True when *key* is an unmistakable redaction placeholder.
+
+    Kept separate from :data:`auditor.patterns.NOISE_SUBSTRINGS` because a bare
+    ``xxx`` / ``xxxxx`` substring collides with genuine random secrets, while an
+    all-``x`` or all-asterisk value never does.
+    """
+    return any(p.search(key) for p in REDACTION_MARKER_PATTERNS)
 
 
 class APIAuditor:
@@ -74,6 +88,7 @@ class APIAuditor:
         self.stats_by_provider: dict[str, dict[str, int]] = {}
         self.stats_by_repo: dict[str, int] = {}
         self._provider_found_count: dict[str, int] = {}
+        self._processed_since_save = 0
         self.since_dt = None
         if args.since_checkpoint and progress.checkpoint_timestamp:
             self.since_dt = parse_iso8601(progress.checkpoint_timestamp)
@@ -116,6 +131,19 @@ class APIAuditor:
         self.stats_by_repo[repo] = self.stats_by_repo.get(repo, 0) + 1
         self._provider_found_count[provider] = self._provider_found_count.get(provider, 0) + 1
 
+    def _checkpoint_if_due(self) -> None:
+        """Save the checkpoint every ``checkpoint_interval`` items processed.
+
+        Uses its own counter rather than ``len(processed) % interval == 0``:
+        items are skipped in several paths (already-processed, unreadable,
+        filtered), so a modulo test can step straight over a multiple and then
+        never fire again for the rest of the scan.
+        """
+        self._processed_since_save += 1
+        if self._processed_since_save >= self.args.checkpoint_interval:
+            self._processed_since_save = 0
+            self.progress.save_progress()
+
     def _record_validation(self, provider: str, valid: bool | None) -> None:
         provider_stats = self.stats_by_provider.setdefault(
             provider, {"found": 0, "validated_true": 0, "validated_false": 0}
@@ -131,8 +159,12 @@ class APIAuditor:
 
     async def _fetch_initial_rate_limit(self) -> None:
         """Sync the token bucket with GitHub's actual remaining search quota."""
+        if self.session is None:
+            # Best-effort optimisation: never fatal, the bucket just keeps its
+            # conservative SEARCH_QUOTA default.
+            logger.debug("ClientSession not initialized; skipping rate-limit sync")
+            return
         try:
-            assert self.session is not None, "ClientSession not initialized; use async with"
             headers = {"Authorization": f"token {self.token}"}
             async with self.session.get(
                 "https://api.github.com/rate_limit", headers=headers
@@ -162,7 +194,8 @@ class APIAuditor:
     async def request_with_retry(
         self, url: str, headers: dict[str, str] | None = None
     ) -> dict[str, Any] | None:
-        assert self.session is not None, "ClientSession not initialized; use async with"
+        if self.session is None:
+            raise RuntimeError("ClientSession not initialized; use 'async with APIAuditor(...)'")
         for attempt in range(self.rate_limiter.max_retries):
             try:
                 request_headers = {"Authorization": f"token {self.token}"}
@@ -307,6 +340,23 @@ class APIAuditor:
             return False
         return any(p.search(text) for p in self.compiled_deny)
 
+    @staticmethod
+    def _key_line(key: str, context: str) -> str:
+        """Return the line of *context* that contains the matched key.
+
+        Noise detection is scoped to the key's own line. The raw candidate
+        context is a +/-CONTEXT_WINDOW character slice, which routinely spans
+        several lines; without this narrowing an unrelated line carrying a
+        noise word (e.g. an ``AKIA...EXAMPLE`` doc sample on the next line)
+        silently hard-rejected an otherwise genuine key on the line above.
+        """
+        for line in context.splitlines():
+            if key in line:
+                return line
+        # Fall back to the whole window when the key is not visible verbatim
+        # (truncated window, or a match spanning a line break).
+        return context
+
     def is_probable_secret(self, key: str, context: str) -> tuple[bool, float]:
         """Return (is_likely_secret, confidence_score).
 
@@ -315,16 +365,18 @@ class APIAuditor:
         overridden by an allow pattern.  The caller uses the pre-calculated score to
         avoid double computation.
         """
-        combined = f"{key} {context}"
-        lowered = combined.lower()
+        # Noise is judged on the key's own line only; scoring still uses the full
+        # context window so nearby keyword hits (api_key, secret, …) still count.
+        noise_scope = f"{key} {self._key_line(key, context)}"
+        lowered = noise_scope.lower()
 
-        if self._matches_deny(combined):
+        if self._matches_deny(f"{key} {context}"):
             return False, 0.0
 
-        is_noise = any(noise in lowered for noise in NOISE_SUBSTRINGS)
+        is_noise = any(noise in lowered for noise in NOISE_SUBSTRINGS) or _is_redaction_marker(key)
 
         # Allow pattern overrides the noise hard-reject.
-        if self.compiled_allow and self._matches_allow(combined):
+        if self.compiled_allow and self._matches_allow(f"{key} {context}"):
             confidence = calculate_confidence_score(key, context, is_noise)
             return True, confidence
 
@@ -367,6 +419,11 @@ class APIAuditor:
     async def batch_validate_keys(
         self, keys_data: list[tuple[dict[str, Any], str]], provider: str
     ) -> None:
+        if provider in NON_VALIDATABLE_PROVIDERS:
+            # Google/AWS/Azure have no lightweight validation endpoint; skip the
+            # session and the request entirely rather than always getting None.
+            logger.debug("No live validation available for %s — skipping", provider)
+            return
         validator = VALIDATION_MAP.get(provider)
         if not validator:
             return
@@ -382,9 +439,22 @@ class APIAuditor:
                 async with val_semaphore:
                     return await validator(key, timeout, no_ssl_verify, session)  # type: ignore[no-untyped-call]
 
-            tasks = [_validated(raw_key) for _, raw_key in keys_data]
-            results = await asyncio.gather(*tasks)
-            for (key_data, _), valid in zip(keys_data, results, strict=False):
+            # Dedupe by fingerprint so a key seen in N repos is validated once, then
+            # fan the single result back out to every merged finding.
+            unique: dict[str, str] = {}
+            per_key: list[tuple[dict[str, Any], str]] = []
+            for key_data, raw_key in keys_data:
+                key_hash = str(key_data.get("key_hash", ""))
+                if key_hash not in unique:
+                    unique[key_hash] = raw_key
+                per_key.append((key_data, key_hash))
+
+            tasks = [_validated(raw) for raw in unique.values()]
+            hash_results = await asyncio.gather(*tasks)
+            by_hash = dict(zip(unique.keys(), hash_results, strict=False))
+
+            for key_data, key_hash in per_key:
+                valid = by_hash.get(key_hash)
                 async with self.lock:
                     key_data["valid"] = valid
                     self._record_validation(provider, valid)
@@ -528,8 +598,6 @@ class APIAuditor:
             async with self.lock:
                 for key, _context, confidence, severity, line_no, col_no in local_candidates:
                     key_hash = fingerprint_key(key)
-                    if self.progress.is_duplicate_hash(key_hash):
-                        continue
                     key_data: dict[str, Any] = {
                         "provider": provider,
                         "key_hash": key_hash,
@@ -546,12 +614,13 @@ class APIAuditor:
                     }
                     if self.args.store_raw_keys:
                         key_data["key"] = key
+                    # add_key merges repeat sightings of the same secret into
+                    # one finding with a growing locations list, so no
+                    # pre-filter here: a second sighting still counts as a hit.
                     self.progress.add_key(key_data)
                     self._incr_stat(provider, repo)
                     keys_to_validate.append((key_data, key))
-                self.progress.mark_processed(identifier)
-                if len(self.progress.processed) % self.args.checkpoint_interval == 0:
-                    self.progress.save_progress()
+                self._checkpoint_if_due()
 
         await self._run_item_loop(
             all_items,
@@ -617,8 +686,6 @@ class APIAuditor:
             async with self.lock:
                 for key, _context, confidence, severity, line_no, col_no in local_candidates:
                     key_hash = fingerprint_key(key)
-                    if self.progress.is_duplicate_hash(key_hash):
-                        continue
                     key_data: dict[str, Any] = {
                         "provider": provider,
                         "key_hash": key_hash,
@@ -641,8 +708,7 @@ class APIAuditor:
                     self._incr_stat(provider, repo)
                     keys_to_validate.append((key_data, key))
                 self.progress.mark_processed(identifier)
-                if len(self.progress.processed) % self.args.checkpoint_interval == 0:
-                    self.progress.save_progress()
+                self._checkpoint_if_due()
 
         await self._run_item_loop(
             all_items,
@@ -755,8 +821,6 @@ class APIAuditor:
             async with self.lock:
                 for key, _context, confidence, severity, line_no, col_no in local_candidates:
                     key_hash = fingerprint_key(key)
-                    if self.progress.is_duplicate_hash(key_hash):
-                        continue
                     key_data: dict[str, Any] = {
                         "provider": provider,
                         "key_hash": key_hash,
@@ -777,8 +841,7 @@ class APIAuditor:
                     self._incr_stat(provider, "local")
                     keys_to_validate.append((key_data, key))
                 self.progress.mark_processed(identifier)
-                if len(self.progress.processed) % self.args.checkpoint_interval == 0:
-                    self.progress.save_progress()
+                self._checkpoint_if_due()
 
         await self._run_item_loop(
             all_files,
@@ -801,8 +864,10 @@ class APIAuditor:
         try:
             process = await asyncio.create_subprocess_exec(
                 "git",
-                "-c", "core.fsmonitor=",
-                "-c", "diff.external=",
+                "-c",
+                "core.fsmonitor=",
+                "-c",
+                "diff.external=",
                 "log",
                 "--all",
                 "--format=%H%x00%an%x00%ae%x00%aI%x00%s",
@@ -822,7 +887,9 @@ class APIAuditor:
                 return
 
             if process.returncode != 0:
-                logger.error("git log failed: %s", stderr_bytes.decode("utf-8", errors="replace").strip())
+                logger.error(
+                    "git log failed: %s", stderr_bytes.decode("utf-8", errors="replace").strip()
+                )
                 return
             raw_log = stdout_bytes.decode("utf-8", errors="replace").strip()
         except FileNotFoundError:
@@ -864,8 +931,10 @@ class APIAuditor:
             try:
                 process = await asyncio.create_subprocess_exec(
                     "git",
-                    "-c", "core.fsmonitor=",
-                    "-c", "diff.external=",
+                    "-c",
+                    "core.fsmonitor=",
+                    "-c",
+                    "diff.external=",
                     "show",
                     "--no-ext-diff",
                     "--format=",
@@ -894,8 +963,6 @@ class APIAuditor:
             async with self.lock:
                 for key, _context, confidence, severity, line_no, col_no in local_candidates:
                     key_hash = fingerprint_key(key)
-                    if self.progress.is_duplicate_hash(key_hash):
-                        continue
                     key_data: dict[str, Any] = {
                         "provider": provider,
                         "key_hash": key_hash,
@@ -920,8 +987,7 @@ class APIAuditor:
                     self._incr_stat(provider, "local (git)")
                     keys_to_validate.append((key_data, key))
                 self.progress.mark_processed(identifier)
-                if len(self.progress.processed) % self.args.checkpoint_interval == 0:
-                    self.progress.save_progress()
+                self._checkpoint_if_due()
 
         await self._run_item_loop(
             commits,

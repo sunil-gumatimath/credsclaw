@@ -80,6 +80,49 @@ def test_deny_pattern_blocks(tmp_path):
     assert is_probable is False
 
 
+def test_noise_on_neighbouring_line_does_not_drop_key(tmp_path):
+    """A noise word on an adjacent line must not hard-reject a genuine key.
+
+    The candidate context is a +/-CONTEXT_WINDOW slice that spans several
+    lines; noise detection is scoped to the key's own line so a neighbouring
+    doc sample (e.g. ``AKIAIOSFODNN7EXAMPLE``) cannot suppress a real finding.
+    """
+    import string
+
+    valid_chars = string.ascii_letters + string.digits
+    args = _build_args(confidence_threshold=40.0)
+    tracker = ProgressTracker(checkpoint_file=str(tmp_path / "progress.json"), store_raw_keys=False)
+    auditor = APIAuditor("fake-token", RateLimiter(), tracker, args)
+    key = "sk-" + "".join(valid_chars[(i * 17) % len(valid_chars)] for i in range(48))
+    context = f'OPENAI_API_KEY = "{key}"\nAWS_ACCESS_KEY = "AKIAIOSFODNN7EXAMPLE"\n'
+    is_probable, score = auditor.is_probable_secret(key, context)
+    assert is_probable is True
+    assert score >= 40.0
+
+
+def test_noise_on_same_line_still_rejects(tmp_path):
+    """Noise on the key's own line remains a hard reject (regression guard)."""
+    args = _build_args()
+    tracker = ProgressTracker(checkpoint_file=str(tmp_path / "progress.json"), store_raw_keys=False)
+    auditor = APIAuditor("fake-token", RateLimiter(), tracker, args)
+    key = "sk-" + "a" * 48
+    context = f'OPENAI_API_KEY = "{key}"  # example placeholder\nAWS = AKIAIOSFODNN7EXAMPLE'
+    assert auditor.is_probable_secret(key, context)[0] is False
+
+
+def test_candidate_extraction_survives_adjacent_noise_line(tmp_path):
+    """extract_candidates must not lose a key sitting next to a noisy line."""
+    import string
+
+    valid_chars = string.ascii_letters + string.digits
+    args = _build_args(confidence_threshold=40.0)
+    tracker = ProgressTracker(checkpoint_file=str(tmp_path / "progress.json"), store_raw_keys=False)
+    auditor = APIAuditor("fake-token", RateLimiter(), tracker, args)
+    key = "sk-" + "".join(valid_chars[(i * 17) % len(valid_chars)] for i in range(48))
+    content = f'OPENAI_API_KEY = "{key}"\nAWS_ACCESS_KEY = "AKIAIOSFODNN7EXAMPLE"\n'
+    assert len(auditor.extract_candidates(content, OPENAI_KEY_PATTERN)) == 1
+
+
 def test_confidence_threshold_filtering(tmp_path):
     args = _build_args(confidence_threshold=80.0)
     tracker = ProgressTracker(checkpoint_file=str(tmp_path / "progress.json"), store_raw_keys=False)
@@ -240,11 +283,35 @@ async def test_session_no_default_auth_header():
 
 
 @pytest.mark.asyncio
-async def test_retry_after_integer_header():
+async def test_retry_after_integer_header(monkeypatch):
+    """Retry-After: 5 must sleep ~5s rather than the exponential fallback.
+
+    ``asyncio.sleep`` is patched so the assertion is real and the suite does
+    not actually block for 5 seconds.
+    """
+    slept: list[float] = []
+
+    async def fake_sleep(delay):
+        slept.append(delay)
+
+    monkeypatch.setattr("auditor.rate_limiter.asyncio.sleep", fake_sleep)
     rl = RateLimiter()
     await rl.wait_if_needed(429, {"Retry-After": "5"})
-    # It would have slept 5s, but we're not mocking sleep here so just verifying it doesn't crash
-    # If we really wanted to verify, we'd mock asyncio.sleep.
+    assert slept == [5.0]
+
+
+@pytest.mark.asyncio
+async def test_retry_after_invalid_falls_back(monkeypatch):
+    """A non-numeric Retry-After header must not raise; it uses the default."""
+    slept: list[float] = []
+
+    async def fake_sleep(delay):
+        slept.append(delay)
+
+    monkeypatch.setattr("auditor.rate_limiter.asyncio.sleep", fake_sleep)
+    rl = RateLimiter()
+    await rl.wait_if_needed(429, {"Retry-After": "soon"})
+    assert slept == [5]
 
 
 @pytest.mark.asyncio
@@ -257,3 +324,68 @@ async def test_provider_found_count_tracks_per_session():
     auditor._incr_stat("AWS", "repo3")
     assert auditor._provider_found_count["OpenAI"] == 2
     assert auditor._provider_found_count["AWS"] == 1
+
+
+# ~~~ Redaction markers ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+def test_all_x_placeholder_is_rejected(tmp_path):
+    """An obviously redacted value stays rejected even though 'xxx' is no
+    longer a blanket noise substring."""
+    args = _build_args()
+    tracker = ProgressTracker(checkpoint_file=str(tmp_path / "progress.json"))
+    auditor = APIAuditor("t", RateLimiter(), tracker, args)
+    assert auditor.is_probable_secret("sk-" + "x" * 48, "key=sk-" + "x" * 48)[0] is False
+
+
+def test_real_key_containing_xxx_is_not_rejected(tmp_path):
+    """A genuine secret that happens to contain 'xxx' must survive."""
+    import string
+
+    valid = string.ascii_letters + string.digits
+    args = _build_args(confidence_threshold=40.0)
+    tracker = ProgressTracker(checkpoint_file=str(tmp_path / "progress.json"))
+    auditor = APIAuditor("t", RateLimiter(), tracker, args)
+    key = "AKIA" + "".join(valid[i % len(valid)] for i in range(16))
+    key = key[:4] + "xxx" + key[7:]
+    is_probable, _ = auditor.is_probable_secret(key, f"AWS_ACCESS_KEY_ID={key}")
+    assert is_probable is True
+
+
+# ~~~ Checkpoint cadence ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~───────────────────
+@pytest.mark.asyncio
+async def test_checkpoint_saves_on_interval_despite_skipped_items(tmp_path):
+    """Counter-based checkpointing must fire even when processed-count modulo
+    would step over the interval."""
+    args = _build_args(dry_run=False, dir=str(tmp_path), checkpoint_interval=5)
+    for i in range(12):
+        (tmp_path / f"f{i}.txt").write_text("nothing here", encoding="utf-8")
+
+    tracker = ProgressTracker(checkpoint_file=str(tmp_path / "progress.json"))
+    saves = []
+    tracker.save_progress = lambda: saves.append(1)  # type: ignore[method-assign]
+
+    auditor = APIAuditor("t", RateLimiter(), tracker, args)
+    await auditor.audit_local_directory("OpenAI", r"sk-\w{48}", str(tmp_path))
+    # 12 items at interval 5 fires at items 5 and 10, plus the unconditional
+    # end-of-scan save in _run_item_loop.
+    assert len(saves) == 3, f"expected 3 saves for 12 items at interval 5, got {len(saves)}"
+
+
+# ~~~ Cross-repo occurrence counting ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~───────
+@pytest.mark.asyncio
+async def test_local_scan_keeps_one_finding_across_files(tmp_path):
+    """The same key in two files is one secret with two locations."""
+    import string
+
+    valid = string.ascii_letters + string.digits
+    key = "sk-" + "".join(valid[(i * 17) % len(valid)] for i in range(48))
+    (tmp_path / "a.env").write_text(f"OPENAI_API_KEY={key}", encoding="utf-8")
+    (tmp_path / "b.env").write_text(f"OPENAI_API_KEY={key}", encoding="utf-8")
+
+    args = _build_args(dry_run=False, dir=str(tmp_path), confidence_threshold=40.0)
+    tracker = ProgressTracker(checkpoint_file=str(tmp_path / "progress.json"))
+    auditor = APIAuditor("t", RateLimiter(), tracker, args)
+    await auditor.audit_local_directory("OpenAI", OPENAI_KEY_PATTERN, str(tmp_path))
+
+    assert len(tracker.found_keys) == 1
+    assert tracker.found_keys[0]["occurrences"] == 2
+    assert {loc["path"] for loc in tracker.found_keys[0]["locations"]} == {"a.env", "b.env"}
