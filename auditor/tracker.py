@@ -28,7 +28,23 @@ class ProgressTracker:
         self.found_keys: list[dict[str, Any]] = []
         self.seen_hashes: set[str] = set()
         self.checkpoint_timestamp: str | None = None
+        # Locations per key hash, so a secret reused across repos/files is
+        # reported once with every occurrence retained (see add_key).
+        self.locations_by_hash: dict[str, list[dict[str, Any]]] = {}
         self.load_progress()
+
+    @staticmethod
+    def _location_of(key_data: dict[str, Any]) -> dict[str, Any]:
+        """Extract the identifying fields that make a finding's location."""
+        loc: dict[str, Any] = {
+            "repo": key_data.get("repo", ""),
+            "path": key_data.get("path", ""),
+        }
+        if key_data.get("commit"):
+            loc["commit"] = key_data["commit"]
+        if key_data.get("line") is not None:
+            loc["line"] = key_data["line"]
+        return loc
 
     def load_progress(self) -> None:
         path = Path(self.checkpoint_file)
@@ -57,6 +73,16 @@ class ProgressTracker:
                     item["key_hash"] = fingerprint_key(item["key"])
                     item["key_masked"] = mask_key(item["key"])
                     self.seen_hashes.add(item["key_hash"])
+                # Rehydrate per-location tracking from checkpoints written
+                # before occurrences existed.
+                key_hash = item.get("key_hash")
+                if key_hash:
+                    locations = item.get("locations")
+                    if not locations:
+                        locations = [self._location_of(item)]
+                        item["locations"] = locations
+                    item.setdefault("occurrences", len(locations))
+                    self.locations_by_hash.setdefault(key_hash, list(locations))
 
             logger.info(
                 "Resumed: %s items processed, %s keys found",
@@ -116,7 +142,34 @@ class ProgressTracker:
         return key_hash in self.seen_hashes
 
     def add_key(self, key_data: dict[str, Any]) -> None:
+        """Register a finding, merging repeat sightings of the same secret.
+
+        A secret that appears in five repositories is one secret, not five, so
+        it is stored once. Each distinct location is appended to
+        ``locations`` and ``occurrences`` is incremented, so the report can
+        still say "this key leaked in 5 places" instead of silently reporting
+        only the first.
+        """
         key_hash = key_data["key_hash"]
+        location = self._location_of(key_data)
         if key_hash not in self.seen_hashes:
             self.seen_hashes.add(key_hash)
+            self.locations_by_hash[key_hash] = [location]
+            key_data["locations"] = [location]
+            key_data["occurrences"] = 1
             self.found_keys.append(key_data)
+            return
+
+        # Already known: record the extra location instead of dropping it.
+        known = self.locations_by_hash.setdefault(key_hash, [])
+        if location not in known:
+            known.append(location)
+        for entry in self.found_keys:
+            if entry.get("key_hash") == key_hash:
+                entry["locations"] = known
+                entry["occurrences"] = len(known)
+                break
+
+    def occurrences(self, key_hash: str) -> int:
+        """Number of distinct locations recorded for a key hash."""
+        return len(self.locations_by_hash.get(key_hash, []))
