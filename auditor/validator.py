@@ -8,6 +8,7 @@ across multiple validation calls for efficiency.
 import json
 import logging
 import ssl as _ssl
+from collections.abc import Awaitable, Callable
 
 import aiohttp
 
@@ -41,6 +42,98 @@ def _assert_allowed_url(url: str) -> None:
     if not url.startswith("https://"):
         raise ValueError(f"Validation URL must be https: {url}")
 
+
+def _interpret_cloudflare(status: int, data: object) -> bool | None:
+    """Cloudflare returns HTTP 200 even for invalid tokens; read the body."""
+    if status in (401, 403):
+        return False
+    if status != 200:
+        # 429 and other unexpected codes stay "unknown".
+        return None
+    if not isinstance(data, dict):
+        return None
+    success = data.get("success")
+    if success is True:
+        return True
+    if success is False:
+        errors = data.get("errors") or []
+        err_str = json.dumps(errors).lower()
+        if "rate" in err_str or "429" in err_str:
+            return None
+        return False
+    return None
+
+
+async def _run_validation(
+    url: str,
+    do: Callable[[aiohttp.ClientSession], Awaitable[bool | None]],
+    timeout: int,
+    no_ssl_verify: bool,
+    session: aiohttp.ClientSession | None,
+    provider: str,
+) -> bool | None:
+    """Run *do* with a reused or one-shot session, swallowing network errors.
+
+    The SSRF allowlist check and the error net are identical for every
+    provider, so both live here.
+    """
+    try:
+        _assert_allowed_url(url)
+        if session is not None:
+            return await do(session)
+        async with create_validator_session(no_ssl_verify, timeout) as s:
+            return await do(s)
+    except ValueError as exc:
+        logger.debug("%s validation rejected: %s", provider, exc)
+        return None
+    except (aiohttp.ClientError, TimeoutError) as exc:
+        logger.debug("%s validation failed: %s", provider, exc)
+        return None
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("%s validation unexpected error: %s", provider, exc)
+        return None
+
+
+async def _validate_bearer(
+    url: str,
+    key: str,
+    timeout: int,
+    no_ssl_verify: bool,
+    session: aiohttp.ClientSession | None,
+    *,
+    method: str = "GET",
+    headers: dict[str, str] | None = None,
+    interpret: Callable[[int, dict[str, str]], bool | None] | None = None,
+) -> bool | None:
+    """Shared bearer-token validation against a host-approved URL.
+
+    Handles the SSRF allowlist check, the oversized-response guard, session
+    reuse vs. one-shot creation, and the network-error net that every provider
+    needs. *interpret* receives ``(status, headers)`` and returns True / False /
+    None ("unknown"); the default implements the common
+    200=True, 401/403=False, 429=unknown mapping.
+    """
+    if interpret is None:
+
+        def interpret(status: int, _headers: dict[str, str]) -> bool | None:
+            if status == 200:
+                return True
+            if status in (401, 403):
+                return False
+            return None  # 429 and anything unexpected stay "unknown"
+
+    request_headers = dict(headers) if headers else {}
+    request_headers.setdefault("Authorization", f"Bearer {key}")
+
+    async def _do(s: aiohttp.ClientSession) -> bool | None:
+        async with s.request(method, url, headers=request_headers) as response:
+            if response.content_length is not None and response.content_length > 1_000_000:
+                return None
+            return interpret(response.status, dict(response.headers))
+
+    return await _run_validation(url, _do, timeout, no_ssl_verify, session, url)
+
+
 def create_validator_session(
     no_ssl_verify: bool = False, timeout: int = 10
 ) -> aiohttp.ClientSession:
@@ -63,36 +156,9 @@ async def validate_openai_key(
     no_ssl_verify: bool = False,
     session: aiohttp.ClientSession | None = None,
 ) -> bool | None:
-    try:
-        url = "https://api.openai.com/v1/models"
-        _assert_allowed_url(url)
-
-        async def _do(s: aiohttp.ClientSession) -> bool | None:
-            async with s.get(
-                url,
-                headers={"Authorization": f"Bearer {key}"},
-            ) as response:
-                if response.content_length is not None and response.content_length > 1_000_000:
-                    logger.warning("OpenAI validation response too large: %s", response.content_length)
-                    return None
-                if response.status == 200:
-                    return True
-                if response.status in (401, 403):
-                    return False
-                if response.status == 429:
-                    return None
-                return None
-
-        if session is not None:
-            return await _do(session)
-        async with create_validator_session(no_ssl_verify, timeout) as s:
-            return await _do(s)
-    except (aiohttp.ClientError, TimeoutError, json.JSONDecodeError) as exc:
-        logger.debug("OpenAI validation failed: %s", exc)
-        return None
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.debug("OpenAI validation unexpected error: %s", exc)
-        return None
+    return await _validate_bearer(
+        "https://api.openai.com/v1/models", key, timeout, no_ssl_verify, session
+    )
 
 
 async def validate_anthropic_key(
@@ -101,35 +167,14 @@ async def validate_anthropic_key(
     no_ssl_verify: bool = False,
     session: aiohttp.ClientSession | None = None,
 ) -> bool | None:
-    try:
-        url = "https://api.anthropic.com/v1/models"
-        _assert_allowed_url(url)
-
-        async def _do(s: aiohttp.ClientSession) -> bool | None:
-            async with s.get(
-                url,
-                headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
-            ) as response:
-                if response.content_length is not None and response.content_length > 1_000_000:
-                    return None
-                if response.status == 200:
-                    return True
-                if response.status in (401, 403):
-                    return False
-                if response.status == 429:
-                    return None
-                return None
-
-        if session is not None:
-            return await _do(session)
-        async with create_validator_session(no_ssl_verify, timeout) as s:
-            return await _do(s)
-    except (aiohttp.ClientError, TimeoutError, json.JSONDecodeError) as exc:
-        logger.debug("Anthropic validation failed: %s", exc)
-        return None
-    except Exception as exc:  # pragma: no cover
-        logger.debug("Anthropic validation unexpected error: %s", exc)
-        return None
+    return await _validate_bearer(
+        "https://api.anthropic.com/v1/models",
+        key,
+        timeout,
+        no_ssl_verify,
+        session,
+        headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
+    )
 
 
 async def validate_google_key(
@@ -140,7 +185,7 @@ async def validate_google_key(
 ) -> bool | None:
     # No reliable lightweight validation endpoint for Google AI keys.
     # Preserved as a stub for future implementation.
-    logger.info("Google validation not implemented — skipping")
+    logger.debug("Google validation not implemented — skipping")
     return None
 
 
@@ -181,6 +226,7 @@ async def validate_github_key(
                         pass
                     return False
                 return None
+
         if session is not None:
             return await _do(session)
         async with create_validator_session(no_ssl_verify, timeout) as s:
@@ -202,6 +248,7 @@ async def validate_slack_key(
     if "hooks.slack.com" in key:
         # Webhook URLs should not be tested against auth.test (treats them as bearer tokens)
         return None
+
     try:
         url = "https://slack.com/api/auth.test"
         _assert_allowed_url(url)
@@ -253,35 +300,9 @@ async def validate_huggingface_key(
     no_ssl_verify: bool = False,
     session: aiohttp.ClientSession | None = None,
 ) -> bool | None:
-    try:
-        url = "https://huggingface.co/api/whoami-v2"
-        _assert_allowed_url(url)
-
-        async def _do(s: aiohttp.ClientSession) -> bool | None:
-            async with s.get(
-                url,
-                headers={"Authorization": f"Bearer {key}"},
-            ) as response:
-                if response.content_length is not None and response.content_length > 1_000_000:
-                    return None
-                if response.status == 200:
-                    return True
-                if response.status in (401, 403):
-                    return False
-                if response.status == 429:
-                    return None
-                return None
-
-        if session is not None:
-            return await _do(session)
-        async with create_validator_session(no_ssl_verify, timeout) as s:
-            return await _do(s)
-    except (aiohttp.ClientError, TimeoutError, json.JSONDecodeError) as exc:
-        logger.debug("HuggingFace validation failed: %s", exc)
-        return None
-    except Exception as exc:  # pragma: no cover
-        logger.debug("HuggingFace validation unexpected error: %s", exc)
-        return None
+    return await _validate_bearer(
+        "https://huggingface.co/api/whoami-v2", key, timeout, no_ssl_verify, session
+    )
 
 
 async def validate_cloudflare_key(
@@ -290,51 +311,19 @@ async def validate_cloudflare_key(
     no_ssl_verify: bool = False,
     session: aiohttp.ClientSession | None = None,
 ) -> bool | None:
-    try:
-        url = "https://api.cloudflare.com/client/v4/user/tokens/verify"
-        _assert_allowed_url(url)
+    url = "https://api.cloudflare.com/client/v4/user/tokens/verify"
 
-        async def _do(s: aiohttp.ClientSession) -> bool | None:
-            async with s.get(
-                url,
-                headers={"Authorization": f"Bearer {key}"},
-            ) as response:
-                if response.content_length is not None and response.content_length > 1_000_000:
-                    return None
-                if response.status in (401, 403):
-                    return False
-                if response.status == 429:
-                    return None
-                if response.status != 200:
-                    # Cloudflare returns 200 even for invalid tokens but with success:false
-                    # For non-200, treat as unknown unless 401/403
-                    return None
-                try:
-                    data = await response.json()
-                except (json.JSONDecodeError, aiohttp.ContentTypeError):
-                    return None
-                success = data.get("success")
-                if success is True:
-                    return True
-                if success is False:
-                    # Check if failure due to rate limit
-                    errors = data.get("errors") or []
-                    err_str = json.dumps(errors).lower()
-                    if "rate" in err_str or "429" in err_str:
-                        return None
-                    return False
+    async def _do(s: aiohttp.ClientSession) -> bool | None:
+        async with s.get(url, headers={"Authorization": f"Bearer {key}"}) as response:
+            if response.content_length is not None and response.content_length > 1_000_000:
                 return None
+            try:
+                data = await response.json()
+            except (json.JSONDecodeError, aiohttp.ContentTypeError):
+                data = None
+            return _interpret_cloudflare(response.status, data)
 
-        if session is not None:
-            return await _do(session)
-        async with create_validator_session(no_ssl_verify, timeout) as s:
-            return await _do(s)
-    except (aiohttp.ClientError, TimeoutError) as exc:
-        logger.debug("Cloudflare validation failed: %s", exc)
-        return None
-    except Exception as exc:  # pragma: no cover
-        logger.debug("Cloudflare validation unexpected error: %s", exc)
-        return None
+    return await _run_validation(url, _do, timeout, no_ssl_verify, session, "Cloudflare")
 
 
 async def validate_replicate_key(
@@ -343,35 +332,9 @@ async def validate_replicate_key(
     no_ssl_verify: bool = False,
     session: aiohttp.ClientSession | None = None,
 ) -> bool | None:
-    try:
-        url = "https://api.replicate.com/v1/account"
-        _assert_allowed_url(url)
-
-        async def _do(s: aiohttp.ClientSession) -> bool | None:
-            async with s.get(
-                url,
-                headers={"Authorization": f"Bearer {key}"},
-            ) as response:
-                if response.content_length is not None and response.content_length > 1_000_000:
-                    return None
-                if response.status == 200:
-                    return True
-                if response.status in (401, 403):
-                    return False
-                if response.status == 429:
-                    return None
-                return None
-
-        if session is not None:
-            return await _do(session)
-        async with create_validator_session(no_ssl_verify, timeout) as s:
-            return await _do(s)
-    except (aiohttp.ClientError, TimeoutError, json.JSONDecodeError) as exc:
-        logger.debug("Replicate validation failed: %s", exc)
-        return None
-    except Exception as exc:  # pragma: no cover
-        logger.debug("Replicate validation unexpected error: %s", exc)
-        return None
+    return await _validate_bearer(
+        "https://api.replicate.com/v1/account", key, timeout, no_ssl_verify, session
+    )
 
 
 async def validate_groq_key(
@@ -380,35 +343,9 @@ async def validate_groq_key(
     no_ssl_verify: bool = False,
     session: aiohttp.ClientSession | None = None,
 ) -> bool | None:
-    try:
-        url = "https://api.groq.com/openai/v1/models"
-        _assert_allowed_url(url)
-
-        async def _do(s: aiohttp.ClientSession) -> bool | None:
-            async with s.get(
-                url,
-                headers={"Authorization": f"Bearer {key}"},
-            ) as response:
-                if response.content_length is not None and response.content_length > 1_000_000:
-                    return None
-                if response.status == 200:
-                    return True
-                if response.status in (401, 403):
-                    return False
-                if response.status == 429:
-                    return None
-                return None
-
-        if session is not None:
-            return await _do(session)
-        async with create_validator_session(no_ssl_verify, timeout) as s:
-            return await _do(s)
-    except (aiohttp.ClientError, TimeoutError, json.JSONDecodeError) as exc:
-        logger.debug("Groq validation failed: %s", exc)
-        return None
-    except Exception as exc:  # pragma: no cover
-        logger.debug("Groq validation unexpected error: %s", exc)
-        return None
+    return await _validate_bearer(
+        "https://api.groq.com/openai/v1/models", key, timeout, no_ssl_verify, session
+    )
 
 
 async def validate_openrouter_key(
@@ -417,35 +354,9 @@ async def validate_openrouter_key(
     no_ssl_verify: bool = False,
     session: aiohttp.ClientSession | None = None,
 ) -> bool | None:
-    try:
-        url = "https://openrouter.ai/api/v1/auth/key"
-        _assert_allowed_url(url)
-
-        async def _do(s: aiohttp.ClientSession) -> bool | None:
-            async with s.get(
-                url,
-                headers={"Authorization": f"Bearer {key}"},
-            ) as response:
-                if response.content_length is not None and response.content_length > 1_000_000:
-                    return None
-                if response.status == 200:
-                    return True
-                if response.status in (401, 403):
-                    return False
-                if response.status == 429:
-                    return None
-                return None
-
-        if session is not None:
-            return await _do(session)
-        async with create_validator_session(no_ssl_verify, timeout) as s:
-            return await _do(s)
-    except (aiohttp.ClientError, TimeoutError, json.JSONDecodeError) as exc:
-        logger.debug("OpenRouter validation failed: %s", exc)
-        return None
-    except Exception as exc:  # pragma: no cover
-        logger.debug("OpenRouter validation unexpected error: %s", exc)
-        return None
+    return await _validate_bearer(
+        "https://openrouter.ai/api/v1/auth/key", key, timeout, no_ssl_verify, session
+    )
 
 
 async def validate_together_key(
@@ -454,35 +365,9 @@ async def validate_together_key(
     no_ssl_verify: bool = False,
     session: aiohttp.ClientSession | None = None,
 ) -> bool | None:
-    try:
-        url = "https://api.together.xyz/v1/models"
-        _assert_allowed_url(url)
-
-        async def _do(s: aiohttp.ClientSession) -> bool | None:
-            async with s.get(
-                url,
-                headers={"Authorization": f"Bearer {key}"},
-            ) as response:
-                if response.content_length is not None and response.content_length > 1_000_000:
-                    return None
-                if response.status == 200:
-                    return True
-                if response.status in (401, 403):
-                    return False
-                if response.status == 429:
-                    return None
-                return None
-
-        if session is not None:
-            return await _do(session)
-        async with create_validator_session(no_ssl_verify, timeout) as s:
-            return await _do(s)
-    except (aiohttp.ClientError, TimeoutError, json.JSONDecodeError) as exc:
-        logger.debug("Together validation failed: %s", exc)
-        return None
-    except Exception as exc:  # pragma: no cover
-        logger.debug("Together validation unexpected error: %s", exc)
-        return None
+    return await _validate_bearer(
+        "https://api.together.xyz/v1/models", key, timeout, no_ssl_verify, session
+    )
 
 
 async def validate_mistral_key(
@@ -491,35 +376,9 @@ async def validate_mistral_key(
     no_ssl_verify: bool = False,
     session: aiohttp.ClientSession | None = None,
 ) -> bool | None:
-    try:
-        url = "https://api.mistral.ai/v1/models"
-        _assert_allowed_url(url)
-
-        async def _do(s: aiohttp.ClientSession) -> bool | None:
-            async with s.get(
-                url,
-                headers={"Authorization": f"Bearer {key}"},
-            ) as response:
-                if response.content_length is not None and response.content_length > 1_000_000:
-                    return None
-                if response.status == 200:
-                    return True
-                if response.status in (401, 403):
-                    return False
-                if response.status == 429:
-                    return None
-                return None
-
-        if session is not None:
-            return await _do(session)
-        async with create_validator_session(no_ssl_verify, timeout) as s:
-            return await _do(s)
-    except (aiohttp.ClientError, TimeoutError, json.JSONDecodeError) as exc:
-        logger.debug("Mistral validation failed: %s", exc)
-        return None
-    except Exception as exc:  # pragma: no cover
-        logger.debug("Mistral validation unexpected error: %s", exc)
-        return None
+    return await _validate_bearer(
+        "https://api.mistral.ai/v1/models", key, timeout, no_ssl_verify, session
+    )
 
 
 async def validate_aws_key(
@@ -528,9 +387,10 @@ async def validate_aws_key(
     no_ssl_verify: bool = False,
     session: aiohttp.ClientSession | None = None,
 ) -> bool | None:
-    # AWS keys require both Access Key ID AND Secret Access Key.
-    # Preserved as a stub for future implementation.
-    logger.info("AWS validation not implemented — skipping")
+    # AWS keys require both Access Key ID AND Secret Access Key, and validation
+    # means a real SigV4-signed request (e.g. sts:GetCallerIdentity). The access
+    # key ID alone cannot be validated, so this stays a stub.
+    logger.debug("AWS validation not implemented — skipping")
     return None
 
 
@@ -542,13 +402,19 @@ async def validate_azure_key(
 ) -> bool | None:
     # Azure connection strings require SDK-based validation.
     # Preserved as a stub for future implementation.
-    logger.info("Azure validation not implemented — skipping")
+    logger.debug("Azure validation not implemented — skipping")
     return None
 
 
 # ---------------------------------------------------------------------------
 # Validation registry  (provider_display_name -> callable)
 # ---------------------------------------------------------------------------
+
+# Providers whose validator can never return a verdict. batch_validate_keys
+# skips these up front instead of opening a session and issuing a request that
+# can only ever come back None.
+NON_VALIDATABLE_PROVIDERS = frozenset({"Google", "AWS", "Azure"})
+
 VALIDATION_MAP = {
     "OpenAI": validate_openai_key,
     "Anthropic": validate_anthropic_key,

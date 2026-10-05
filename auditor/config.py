@@ -49,6 +49,39 @@ PLURAL_LIST_KEYS: frozenset = frozenset(
     }
 )
 
+# Keys whose argparse action is ``store_true``. These must end up as real
+# booleans: without coercion a YAML value of ``no`` / ``false`` / ``0`` would
+# land in the namespace as a *truthy string* and silently invert the flag.
+BOOLEAN_CONFIG_KEYS: frozenset = frozenset(
+    {
+        "validate",
+        "dry_run",
+        "resume",
+        "since_checkpoint",
+        "no_ssl_verify",
+        "store_raw_keys",
+        "encrypt_output",
+    }
+)
+
+_TRUTHY = {"1", "true", "yes", "on", "y", "t"}
+_FALSY = {"0", "false", "no", "off", "n", "f", ""}
+
+
+def coerce_bool(value: object) -> bool | None:
+    """Coerce a YAML scalar to a bool, or return None when ambiguous."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        low = value.strip().lower()
+        if low in _TRUTHY:
+            return True
+        if low in _FALSY:
+            return False
+    return None
+
 
 def load_config(filepath: str) -> dict:
     """Load configuration from a YAML file. Returns {} on failure."""
@@ -90,7 +123,14 @@ def apply_config_to_parser(config: dict, parser) -> None:
             value = ",".join(str(v) for v in value)
 
         # Type coercion for numeric fields
-        if config_key in ("max_concurrency", "checkpoint_interval", "max_pages", "min_stars", "recent_repos_days", "timeout"):
+        if config_key in (
+            "max_concurrency",
+            "checkpoint_interval",
+            "max_pages",
+            "min_stars",
+            "recent_repos_days",
+            "timeout",
+        ):
             try:
                 value = int(value)  # type: ignore[assignment]
             except (ValueError, TypeError):
@@ -102,5 +142,18 @@ def apply_config_to_parser(config: dict, parser) -> None:
             except (ValueError, TypeError):
                 logger.error("Invalid float for %s: %r", config_key, value)
                 continue
+
+        # store_true flags need a genuine bool, otherwise YAML's ``no`` /
+        # ``false`` becomes a truthy string and inverts the flag's meaning.
+        if config_key in BOOLEAN_CONFIG_KEYS:
+            as_bool = coerce_bool(value)
+            if as_bool is None:
+                logger.error(
+                    "Invalid boolean for %s: %r (expected true/false, yes/no, 1/0)",
+                    config_key,
+                    value,
+                )
+                continue
+            value = as_bool
 
         parser.set_defaults(**{arg_dest: value})

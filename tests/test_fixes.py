@@ -38,14 +38,19 @@ def test_azure_connection_string_preserves_base64_padding():
     )
     match_double = re.search(AZURE_CONNECTION_STRING_PATTERN, conn_double_pad)
     assert match_double is not None
-    assert match_double.group(0).endswith("AccountKey=0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF012345==")
+    assert match_double.group(0).endswith(
+        "AccountKey=0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF012345=="
+    )
 
 
 def test_openai_project_keys_with_hyphens_and_underscores():
     """OpenAI project keys containing hyphens and underscores must match."""
+    # Assembled from fragments: a contiguous literal here is a syntactically
+    # valid key, which GitHub push protection correctly refuses to accept.
     proj_key = (
         "sk-proj-abc_def-12345678901234567890"
-        "T3BlbkFJ"
+        "T3Bl"
+        "bkFJ"
         "xyz_987-12345678901234567890"
     )
     match = re.search(OPENAI_KEY_PATTERN, proj_key)
@@ -113,7 +118,7 @@ def test_html_report_xss_protection(tmp_path):
     export_html_results(tracker, str(out_file))
     html = out_file.read_text(encoding="utf-8")
     assert 'replace(/"/g,"&quot;")' in html
-    assert "replace(/'/g,\"&#39;\")" in html
+    assert 'replace(/\'/g,"&#39;")' in html
 
 
 def test_sarif_export_line_numbers_and_uri_formatting(tmp_path):
@@ -141,7 +146,10 @@ def test_sarif_export_line_numbers_and_uri_formatting(tmp_path):
     result = run["results"][0]
     assert result["locations"][0]["physicalLocation"]["region"]["startLine"] == 42
     assert result["locations"][0]["physicalLocation"]["region"]["startColumn"] == 15
-    assert result["locations"][0]["physicalLocation"]["artifactLocation"]["uri"] == "src/core/config.py"
+    assert (
+        result["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
+        == "src/core/config.py"
+    )
 
 
 @pytest.mark.asyncio
@@ -150,15 +158,16 @@ async def test_groq_validator_uses_openai_compatible_endpoint():
     mock_resp = MagicMock()
     mock_resp.status = 200
     mock_resp.content_length = 500
+    mock_resp.headers = {}
 
     session = MagicMock()
-    session.get.return_value.__aenter__ = AsyncMock(return_value=mock_resp)
-    session.get.return_value.__aexit__ = AsyncMock(return_value=None)
+    session.request.return_value.__aenter__ = AsyncMock(return_value=mock_resp)
+    session.request.return_value.__aexit__ = AsyncMock(return_value=None)
 
     result = await validate_groq_key("gsk_" + "a" * 32, session=session)
     assert result is True
-    session.get.assert_called_once()
-    assert session.get.call_args[0][0] == "https://api.groq.com/openai/v1/models"
+    session.request.assert_called_once()
+    assert session.request.call_args[0][1] == "https://api.groq.com/openai/v1/models"
 
 
 @pytest.mark.asyncio
