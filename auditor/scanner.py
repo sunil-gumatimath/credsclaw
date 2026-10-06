@@ -149,6 +149,31 @@ class APIAuditor:
         self.stats_by_repo[repo] = self.stats_by_repo.get(repo, 0) + 1
         self._provider_found_count[provider] = self._provider_found_count.get(provider, 0) + 1
 
+    def save_progress_locked(self) -> None:
+        """Save the checkpoint while holding ``self.lock``.
+
+        Scan modes fan out one task per file and each can reach the
+        checkpoint-interval threshold, so without serialising them two tasks
+        can write the tracker at once and the slower write can land last while
+        carrying less state — silently dropping findings the checkpoint claims
+        to have covered. ``os.replace`` keeps the file valid, so this loses
+        progress on a crash rather than corrupting it.
+
+        The save is synchronous and runs to completion without yielding, and
+        every mutation of the tracker's sets and lists already happens under
+        ``self.lock`` in the callers. So the only race left is between two
+        checkpoints, and serialising them needs nothing more than this guard.
+        """
+        if self._checkpoint_saving:
+            # Re-entrant save (a caller already holds self.lock). The outer
+            # call will persist the state this one would have written.
+            return
+        self._checkpoint_saving = True
+        try:
+            self.progress.save_progress()
+        finally:
+            self._checkpoint_saving = False
+
     def _checkpoint_if_due(self) -> None:
         """Save the checkpoint every ``checkpoint_interval`` items processed.
 
@@ -160,7 +185,7 @@ class APIAuditor:
         self._processed_since_save += 1
         if self._processed_since_save >= self.args.checkpoint_interval:
             self._processed_since_save = 0
-            self.progress.save_progress()
+            self.save_progress_locked()
 
     def _record_validation(self, provider: str, valid: bool | None) -> None:
         provider_stats = self.stats_by_provider.setdefault(
@@ -648,7 +673,7 @@ class APIAuditor:
                     logger.info("Validating %s %s keys...", len(bucket), provider_name)
                     await self.batch_validate_keys(bucket, provider_name)
 
-        self.progress.save_progress()
+        self.save_progress_locked()
 
     async def _wrap_local_file(self, file_path: Path, process_func) -> None:
         """Bounded-concurrency wrapper mirroring ``_run_item_loop``'s guard."""
@@ -849,7 +874,7 @@ class APIAuditor:
             logger.info("Validating %s %s keys...", len(keys_to_validate), provider)
             await self.batch_validate_keys(keys_to_validate, provider)
 
-        self.progress.save_progress()
+        self.save_progress_locked()
         logger.info(
             "Completed %s: %s keys found (session), %s total unique keys overall",
             description,
@@ -1194,7 +1219,7 @@ class APIAuditor:
                 len(commits),
                 len(compiled),
             )
-        self.progress.save_progress()
+        self.save_progress_locked()
 
     @staticmethod
     def _compile_providers(
