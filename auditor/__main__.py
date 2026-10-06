@@ -194,6 +194,7 @@ async def main() -> None:
                 for result in results:
                     if isinstance(result, Exception):
                         logger.error("Provider task failed: %s", result, exc_info=result)
+                auditor.log_content_cache()
 
             if not args.dry_run:
                 encryption_key = args.encryption_key or os.getenv("OUTPUT_ENCRYPTION_KEY", "")

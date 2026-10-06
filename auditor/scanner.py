@@ -5,6 +5,7 @@ import base64
 import logging
 import re
 import ssl
+from collections import OrderedDict
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -41,6 +42,11 @@ logger = logging.getLogger(__name__)
 MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024  # Skip files larger than 5 MB (avoid OOM)
 CONTEXT_WINDOW = 80  # Characters of context around a match (was 40; S-MED-02)
 VALIDATION_CONCURRENCY = 5  # Max parallel validation requests (V-MED-04)
+# Memoised GitHub file contents. The contents API allows 1000 req/hr
+# authenticated, and code search runs once per provider, so an uncached design
+# re-downloads every file once per provider that matches it.
+CONTENT_CACHE_MAX_CHARS = 32 * 1024 * 1024  # ~32M chars
+CONTENT_CACHE_MAX_ENTRIES = 4096
 _PATTERN_CACHE: dict[str, re.Pattern[str]] = {}
 
 
@@ -85,6 +91,12 @@ class APIAuditor:
                     self.compiled_deny.append(re.compile(p, re.IGNORECASE))
                 except re.error as exc:
                     logger.warning("Invalid deny pattern '%s' skipped: %s", p, exc)
+        self._content_cache: OrderedDict[tuple[str, str, str], str] = OrderedDict()
+        self._content_cache_chars = 0
+        self._content_cache_hits = 0
+        self._content_cache_misses = 0
+        self._content_cache_max_chars = CONTENT_CACHE_MAX_CHARS
+        self._content_cache_max_entries = CONTENT_CACHE_MAX_ENTRIES
         self.stats_by_provider: dict[str, dict[str, int]] = {}
         self.stats_by_repo: dict[str, int] = {}
         self._provider_found_count: dict[str, int] = {}
@@ -311,13 +323,34 @@ class APIAuditor:
             url, headers={"Accept": "application/vnd.github.cloak-preview+json"}
         )
 
-    async def get_file_content(self, repo_full_name: str, path: str) -> str | None:
+    async def get_file_content(
+        self, repo_full_name: str, path: str, blob_sha: str = ""
+    ) -> str | None:
+        """Fetch a file's content, memoised per blob.
+
+        Every provider runs its own code search, so one file holding several
+        key types is requested once per matching provider. Each request costs a
+        round trip against the contents API (1000 req/hr authenticated), so
+        the decoded text is cached keyed on ``(repo, path, blob_sha)``.
+
+        ``blob_sha`` is the blob SHA from the search result. Including it means
+        an edited file is re-fetched rather than served stale, while an
+        unchanged file is reused across provider passes.
+        """
+        cache_key = (repo_full_name, path, blob_sha)
+        if cache_key in self._content_cache:
+            self._content_cache_hits += 1
+            # Refresh recency so a hot file survives bulk eviction.
+            self._content_cache.move_to_end(cache_key)
+            return self._content_cache[cache_key]
+        self._content_cache_misses += 1
+
         url = f"https://api.github.com/repos/{repo_full_name}/contents/{path}"
         data = await self.request_with_retry(url)
         if not data or "content" not in data:
             return None
         try:
-            return base64.b64decode(data["content"]).decode("utf-8", errors="ignore")
+            content = base64.b64decode(data["content"]).decode("utf-8", errors="ignore")
         except Exception as exc:
             logger.error(
                 "Failed to decode content from %s/%s: %s",
@@ -326,6 +359,33 @@ class APIAuditor:
                 exc,
             )
             return None
+
+        self._store_cached_content(cache_key, content)
+        return content
+
+    def _store_cached_content(self, key: tuple[str, str, str], content: str) -> None:
+        """Insert into the content cache, evicting until it fits the budget.
+
+        Bounded by total characters rather than entry count: file sizes vary by
+        orders of magnitude, so an entry cap alone would still let a large scan
+        grow without limit.
+        """
+        size = len(content)
+        if size > self._content_cache_max_chars:
+            # Too big to cache at all; the caller still gets the content.
+            return
+        while self._content_cache and (
+            self._content_cache_chars + size > self._content_cache_max_chars
+            or len(self._content_cache) >= self._content_cache_max_entries
+        ):
+            _evicted_key, evicted = self._content_cache.popitem(last=False)
+            self._content_cache_chars -= len(evicted)
+        self._content_cache[key] = content
+        self._content_cache_chars += size
+
+    def content_cache_stats(self) -> tuple[int, int, int]:
+        """Return ``(hits, misses, entries)`` for logging and tests."""
+        return self._content_cache_hits, self._content_cache_misses, len(self._content_cache)
 
     # ------------------------------------------------------------------
     # Candidate extraction and filtering
@@ -758,6 +818,20 @@ class APIAuditor:
             len(self.progress.found_keys),
         )
 
+    def log_content_cache(self) -> None:
+        """Report cache effectiveness once the scan is done."""
+        hits, misses, entries = self.content_cache_stats()
+        if misses == 0:
+            return
+        total = hits + misses
+        logger.info(
+            "File content cache: %s/%s requests served from cache (%.0f%%), %s entries",
+            hits,
+            total,
+            100.0 * hits / total,
+            entries,
+        )
+
     # ------------------------------------------------------------------
     # Scan modes
     # ------------------------------------------------------------------
@@ -796,6 +870,9 @@ class APIAuditor:
         ) -> None:
             repo = item["repository"]["full_name"]
             path = item["path"]
+            # Blob SHA keys the content cache, so an edited file is re-fetched
+            # rather than served stale from an earlier provider's pass.
+            blob_sha = item.get("sha") or ""
             identifier = f"{provider}/{repo}/{path}"
 
             if not self._is_recent_enough(repo_updated_at=item["repository"].get("updated_at", "")):
@@ -805,7 +882,7 @@ class APIAuditor:
                 if self.progress.is_processed(identifier):
                     return
 
-            content = await self.get_file_content(repo, path)
+            content = await self.get_file_content(repo, path, blob_sha)
             if not content:
                 async with self.lock:
                     self.progress.mark_processed(identifier)
