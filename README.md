@@ -34,13 +34,15 @@
 | Feature | Description |
 | --- | --- |
 | **4 scan modes** | GitHub code search, commit messages, local directory, git history |
+| **Single-pass local scanning** | `local` and `git-history` walk their target once and apply every provider's pattern per file/commit, so cost scales with target size — not files × providers |
 | **Recent-repo discovery** | Auto-discover repos pushed to in last N days and scan them |
 | **7 provider patterns** | OpenAI, Anthropic, Google, AWS, GitHub, Slack, Azure |
 | **Confidence scoring** | Multi-factor analysis: Shannon entropy, context keywords, noise handling, length, character diversity |
 | **Severity tiers** | CRITICAL (80+), HIGH (60-79), MEDIUM (40-59), LOW (<40) |
 | **Live validation** | Ping provider APIs to confirm whether discovered keys are still active; a reused secret is validated once and the verdict shared across its locations |
-| **Deduplication** | SHA-256 fingerprinting reports a secret once; every additional location is recorded in `locations` with an `occurrences` count |
-| **Checkpoint / Resume** | Save progress mid-scan and resume later without re-scanning |
+| **File content cache** | Code-search results are memoised per blob SHA, so a file holding several key types is downloaded once instead of once per matching provider (contents API: 1000 req/hr) |
+| **Deduplication** | SHA-256 fingerprinting reports a secret once; every additional location is recorded in `locations` with an `occurrences` count. Merging is O(1) per sighting via a hash index, so large scans stay linear |
+| **Checkpoint / Resume** | Save progress mid-scan and resume later without re-scanning. All four modes record every processed identifier, so a resumed run skips work it already covered |
 | **HTML reports** | Interactive, sortable, filterable HTML reports with severity bars |
 | **Encrypted output** | Fernet-symmetric encryption for sensitive results |
 | **Pre-commit integration** | Built in `.pre-commit-config.yaml` generation |
@@ -159,7 +161,7 @@ python -m auditor --repo owner/repo --providers all --validate
 | `--resume` | off | Continue from previous checkpoint (without `--resume`/`--since-checkpoint`, an existing checkpoint file is deleted at startup; requesting a resume with no checkpoint warns and starts fresh). All four scan modes record every processed identifier, so a resumed run skips files it already covered instead of re-fetching them |
 | `--checkpoint-file` | `output/progress.json` | Path to checkpoint file |
 | `--since-checkpoint` | off | Only process items newer than checkpoint timestamp |
-| `--checkpoint-interval` | `25` | Save checkpoint every N processed items |
+| `--checkpoint-interval` | `25` | Save checkpoint every N processed items. The whole checkpoint (findings + processed identifiers) is rewritten each time, so on very large scans this is O(n²) in total I/O — raise the interval if you are scanning tens of thousands of files |
 | `--timeout` | `10` | Validation request timeout in seconds |
 | `--allow-patterns` | (empty) | Comma-separated regex allow patterns |
 | `--deny-patterns` | (empty) | Comma-separated regex deny patterns |
@@ -199,6 +201,20 @@ python -m auditor --recent-repos-days 7 --providers all --mode code
 
 > **Note:** `--recent-repos-days` discovers repos by push date, then searches those repos for key patterns. Capped at 100 repos per run (most recently updated first). For best results, use `--language` to filter (e.g., `--language python`) and increase `--max-pages`.
 
+#### File content cache
+
+Each provider runs its own code search, so a single `.env` holding an AWS key, an OpenAI key, and a GitHub token is returned by three separate searches. Fetching its contents three times costs three round trips against an endpoint limited to **1000 requests/hour** authenticated, so decoded content is memoised in `APIAuditor` keyed on `(repo, path, blob_sha)`.
+
+The blob SHA comes from the search result. Including it means an edited file is re-fetched rather than served stale, while an unchanged file is reused across every provider pass. A file that changes mid-scan therefore costs one extra fetch — the correct trade against silently reporting yesterday's contents.
+
+The cache is bounded on both axes and evicts least-recently-used: `CONTENT_CACHE_MAX_CHARS` (32 M chars, since file sizes vary by orders of magnitude and an entry cap alone would still allow unbounded growth) and `CONTENT_CACHE_MAX_ENTRIES` (4096). A single file larger than the whole budget is not cached at all — it is still returned to the caller, just not memoised. Cache effectiveness is logged once per scan:
+
+```
+File content cache: 847/1153 requests served from cache (73%), 306 entries
+```
+
+Not enabled for `local` or `git-history` modes: those read from disk and already fetch each file once per scan.
+
 ### `commits` — GitHub Commit Message Search
 
 Scans commit messages for keys accidentally described or included in commit text.
@@ -215,7 +231,11 @@ Recursively scans all files in a local directory. Skips symlinks, files larger t
 python -m auditor --mode local --dir . --providers aws,github --output-format html
 ```
 
-The tree is walked **once** and every selected provider's pattern is applied to each file, so cost scales with the number of files rather than files × providers. Each provider still keeps its own findings, stats, and checkpoint entries, so `--resume` and per-provider validation behave exactly as before.
+Implemented by `APIAuditor.audit_local_tree()`. The tree is walked **once** and each file read **once**, then every selected provider's pattern is applied to that content — so cost scales with the number of files rather than files × providers.
+
+Only discovery and reading are shared. Each provider keeps its own findings, stats, checkpoint identifiers (`{provider}/{file}`), and validation pass, so `--resume`, per-provider `--validate`, and `--providers` semantics are unchanged. `audit_local_directory()` is a thin single-provider wrapper over the same method, so the two paths cannot drift.
+
+With `--providers all` (7 providers) on a 47-file tree, this is 7 file reads instead of 329.
 
 ### `git-history` — Local Git History Scan
 
@@ -224,6 +244,14 @@ Runs `git log --all` and inspects every commit's diff content for exposed keys. 
 ```bash
 python -m auditor --mode git-history --dir ./my-repo --providers github,slack
 ```
+
+Implemented by `APIAuditor.audit_git_history_combined()`, which works the same way as `local` mode: one `git log --all`, then one `git show` per commit, with every provider's pattern applied to each diff.
+
+Cost is `git log` once plus one `git show` per commit — not one `git log` per provider and one `git show` per (commit × provider). Measured on a 6-commit repo with 3 providers: **18 → 6** `git show` calls. On this repository (111 commits, 7 providers): 777 → 111.
+
+Commit identifiers stay per provider (`{provider}/git-history/{sha}`), so `--resume` re-reads nothing: a resumed scan issues **zero** `git show` subprocesses. A commit whose diff cannot be read (git missing, timeout) is marked processed for every provider that wanted it, so a resume does not retry a broken commit.
+
+`audit_git_history()` is retained as a thin single-provider wrapper. Git is invoked via `create_subprocess_exec` with an argument list (never a shell string), `core.fsmonitor=` and `diff.external=` are cleared, `--no-ext-diff` is passed, and every SHA is validated against `[0-9a-fA-F]{7,40}` before use.
 
 ### Filtering precedence (`--allow-patterns` / `--deny-patterns`)
 
@@ -414,7 +442,9 @@ repos:
         pass_filenames: false
 ```
 
-> **Note:** this repo's own checked-in `.pre-commit-config.yaml` is different — ruff + ruff-format + mypy + a credsclaw `--dry-run` (estimate-only, never blocks). In-repo, `--generate-pre-commit-hook` raises `FileExistsError` unless `--force`, and `--force` would overwrite the ruff/mypy hooks.
+> **Note:** this repo's own checked-in `.pre-commit-config.yaml` is different — ruff + ruff-format + mypy + a credsclaw `--dry-run` (estimate-only, never blocks), scoped to nothing in particular. In-repo, `--generate-pre-commit-hook` raises `FileExistsError` unless `--force`, and `--force` would overwrite the ruff/mypy hooks.
+
+> **Note:** the generated hook scans the whole working tree, so on a repository whose tests contain synthetic key literals it will block every commit. Scope `--dir` to your shipped source (as this repo's CI does — see [Continuous Integration](#continuous-integration)) or raise `--confidence-threshold`.
 
 ---
 
@@ -426,10 +456,10 @@ auditor/                        # Installable Python package
 ├── __main__.py                 # Entry point: argparse → dispatch → export
 ├── patterns.py                 # 7 regex patterns, noise list, provider registry
 ├── scoring.py                  # Shannon entropy, confidence scoring, severity, masking
-├── scanner.py                  # APIAuditor class — all 4 scan modes
+├── scanner.py                  # APIAuditor — all 4 scan modes (local/git-history use single-pass combined variants)
 ├── validator.py                # Live API validation (shared bearer helper + per-provider verdicts)
 ├── exporter.py                 # JSON/CSV/TXT/HTML/SARIF export + summary printer
-├── tracker.py                  # Checkpoint/resume state management
+├── tracker.py                  # Checkpoint/resume state, dedupe via hash index, occurrence tracking
 ├── cli.py                      # Argparse builder, config merge, pre-commit hook
 ├── config.py                   # YAML config file loader
 ├── rate_limiter.py             # Token-bucket rate limiter (+ exponential backoff) to prevent concurrent-task quota exhaustion
@@ -447,7 +477,7 @@ tests/                          # Module-scoped test files
 ├── test_main.py                # Entry-point / CI exit-code tests
 ├── test_tracker.py             # Checkpoint/resume state, dedupe, occurrence tests
 ├── test_utils.py               # Date-parsing and timestamp helper tests
-└── test_scanner.py             # Noise/allow/deny filtering, checkpoints, git history
+└── test_scanner.py             # Noise/allow/deny filtering, checkpoints, git history, single-pass + resume equivalence, content cache
 ```
 
 ### Audit Flow
@@ -464,10 +494,12 @@ flowchart TD
         T -- code --> T2["--recent-repos-days N (max 100 repos)"]
         T -- code --> T3["Global code index"]
         T -- commits --> T4["Commit-message search"]
-        T -- local/git-history --> T5["--dir path"]
+        T -- local/git-history --> T5["--dir path · one pass, all patterns"]
     end
     subgraph Detect["3 · Detect (per provider)"]
-        T1 & T2 & T3 & T4 & T5 --> D1["Regex extract candidates"]
+        T1 & T2 & T3 & T4 & T5 --> D0{"Already processed? (--resume)"}
+        D0 -- Yes --> D4
+        D0 -- No --> D1["Regex extract candidates"]
         D1 --> D2{"deny match? → drop"}
         D2 --> D3{"noise word? → drop unless allow-matched"}
         D3 --> D4["Score 0-100: entropy 30 + context 25 + noise 20 + length 15 + diversity 10"]
@@ -486,6 +518,9 @@ flowchart TD
 | Decision | Rationale |
 | --- | --- |
 | **Shared validation sessions** | `batch_validate_keys()` creates one `aiohttp.ClientSession` per provider batch, eliminating TCP connection spam |
+| **Single-pass local modes** | `local` and `git-history` read their target once and fan out patterns per file/commit. Both per-provider entry points are thin wrappers over the combined methods, so there is one implementation per mode and no drift. Equivalence is asserted by running both paths over the same target and comparing finding sets |
+| **Content cache keyed on blob SHA** | Keying on `(repo, path, blob_sha)` rather than `(repo, path)` is what makes caching safe: an edited file must never be reported from stale content. The byte budget, not just an entry cap, bounds growth |
+| **Per-provider checkpoints everywhere** | All four modes record a processed identifier on the success path, not just on early-return paths. Without this, `--resume` re-fetched every code-search result while the checkpoint claimed to cover them |
 | **`_run_item_loop` extracted** | Removes ~30 lines of duplicated loop/validation/save/log code from each scan method |
 | **Rate-limit sync on non-discovery scans** | `_fetch_initial_rate_limit()` called in `audit_api_keys()` and `audit_commit_messages()` ensures the token bucket starts at the correct level |
 | **`no_ssl_verify` forwarded** | SSL setting from CLI is passed to validators for corporate proxy environments |
@@ -521,7 +556,24 @@ python -m pytest tests/ -q        # compact output
 
 ### Continuous Integration
 
-`.github/workflows/ci.yml` runs on every push and pull request across Python 3.11–3.13: `ruff check`, `ruff format --check`, `mypy auditor/`, and `pytest` with coverage (published to Codecov). A second job runs a CredsClaw `--dry-run` self-scan of the working tree, so the repo dogfoods the tool it ships.
+`.github/workflows/ci.yml` runs on every push and pull request across Python 3.11–3.13: `ruff check`, `ruff format --check`, `mypy auditor/`, and `pytest` with coverage (published to Codecov).
+
+A second job self-scans with CredsClaw itself. Two steps, because they answer different questions:
+
+```bash
+# Gate — blocks the build. Scoped to the shipped package.
+python -m auditor --mode local --dir auditor --providers all \
+  --confidence-threshold 60.0 --fail-on-findings --output-file output/self_scan.json
+
+# Informational — whole-tree exposure estimate, never blocks
+python -m auditor --mode local --dir . --providers all \
+  --confidence-threshold 60.0 --dry-run
+```
+
+Two deliberate choices worth knowing before you widen either scope:
+
+- **The gate omits `--dry-run`.** Under `--dry-run` the scan short-circuits before matching, so the step would walk the file list and exit 0 no matter what it found — a gate that cannot fail.
+- **The gate scans `auditor/`, not the repo root.** `tests/` contains synthetic keys built from fragments that are syntactically indistinguishable from live ones. A whole-tree gate fails on its own fixtures, which trains everyone to ignore a red build. The informational step still reports the full-tree count, and `--fail-on-findings` on it would be the way to opt in once those fixtures are fragmented.
 
 ### Codebase Stats (approximate, as of Oct 2026)
 
@@ -537,7 +589,7 @@ python -m pytest tests/ -q        # compact output
 - **Single Responsibility** — each module has one concern (scoring, validation, export…)
 - **No Circular Imports** — layered flow centered on `scanner` (`cli/config → scanner → validator/exporter/tracker`), with shared `utils`/`patterns`/`scoring` underneath
 - **Async First** — `asyncio.gather` + `Semaphore` for parallel provider scans
-- **Test Coverage** — 224 tests, ~60% overall. `patterns.py` and `tracker.py` are near-full; `validator.py` (~28%), `scanner.py` (~49%), and `exporter.py` (~41%) remain thin, since exercising live-validation paths needs mocked HTTP and the GitHub search paths need mocked API responses.
+- **Test Coverage** — 190 tests, ~65% overall. `patterns.py` is at 100% and `tracker.py` at 93%; `validator.py` (~31%) and `exporter.py` (~41%) remain thin, since exercising live-validation paths needs mocked HTTP and the exporters have many output-shape branches. `scanner.py` sits at ~58% — the GitHub search paths still need mocked API responses.
 
 ---
 
@@ -550,6 +602,15 @@ Make sure you're using local mode (`--mode local --dir .`). Code search mode onl
 **Q: Does the tool upload my keys anywhere?**
 
 **No.** All scanning is local. In GitHub code-search mode, the tool fetches file contents from GitHub's API, processes them locally, and never sends discovered keys anywhere. Live validation sends the key directly to the provider's API (e.g., `api.openai.com`) for a single validation request.
+
+**Q: Why is my scan re-downloading a file I know it already read?**
+
+It should not be — file contents are memoised per `(repo, path, blob_sha)`. Two situations defeat it, both deliberate:
+
+- **The file changed mid-scan.** The blob SHA is part of the cache key, so an edit during a long scan forces a re-fetch. This is intentional: without it, you would be reported secrets from content that no longer exists.
+- **The cache overflowed.** The budget is 32 M chars / 4096 entries, evicted least-recently-used. A very large scan will evict files that a later provider pass then needs. Raise `CONTENT_CACHE_MAX_CHARS` in `scanner.py` if your scan legitimately needs a bigger working set.
+
+The `File content cache: …` line at the end of a scan reports the hit rate, so you can tell which case you hit.
 
 **Q: How do I avoid false positives from test keys?**
 
@@ -570,6 +631,16 @@ Use `--fail-on-findings` to exit with code 2 when any finding meets the confiden
 **Q: Which providers were removed?**
 
 Stripe, Twilio, SendGrid, and Supabase were removed in an earlier pass. HuggingFace, Cloudflare, Replicate, Groq, OpenRouter, Together AI, and Mistral AI were removed more recently. If you need any of them back, see the git history for their patterns and validators.
+
+Each provider is defined in exactly three places, and adding one back means touching all three: the regex constant plus a `PROVIDER_CONFIGS` entry in `patterns.py`, a validator function plus `VALIDATION_MAP` entry in `validator.py`, and (for SSRF allowlisting) its host in `validator.ALLOWED_VALIDATION_HOSTS`. `tests/test_patterns.py::test_validatable_providers_match_validation_map` fails if the provider registries disagree, so a partial addition is caught immediately.
+
+**Q: Why does scanning `local` mode read each file only once?**
+
+Because `audit_local_tree()` walks the directory once, reads each file once, and then applies every selected provider's pattern to that in-memory content. The older per-provider design re-walked and re-read everything for each provider, so 7 providers meant 7× the I/O for identical findings. The same idea applies to `git-history`, where it means one `git show` per commit instead of one per commit *per provider*.
+
+**Q: `--resume` says it worked but nothing was skipped. Why?**
+
+`--resume` only skips work whose identifier is in the checkpoint, so every scan mode must record one per processed item. Code-search mode previously recorded identifiers only on its early-return paths (unreadable file, already-processed) and not after a successful scan, so a resumed code scan re-fetched every file. If you hit this, delete the checkpoint (`--checkpoint-file`) and re-run; the fix ships in all four modes now.
 
 ---
 
