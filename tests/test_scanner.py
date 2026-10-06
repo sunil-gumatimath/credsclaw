@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import base64
 import logging
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -788,7 +789,121 @@ async def test_git_history_all_resume_skips_git_show(tmp_path, monkeypatch):
     assert len(resumed.found_keys) == len(first.found_keys)
 
 
+# ~~~ Line / column numbering ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~──────────────
+def _legacy_positions(content, pattern):
+    """The pre-optimisation arithmetic, kept as the reference for tests."""
+    out = []
+    for m in re.compile(pattern).finditer(content):
+        last = content.rfind("\n", 0, m.start())
+        out.append(
+            (
+                m.group(0),
+                content[: m.start()].count("\n") + 1,
+                m.start() - last if last != -1 else m.start() + 1,
+            )
+        )
+    return out
+
+
+def _positions(auditor, content, pattern=OPENAI_KEY_PATTERN):
+    return [
+        (key, line, col)
+        for key, _ctx, _conf, _sev, line, col in auditor.extract_candidates(content, pattern)
+    ]
+
+
+LINE_CASES = {
+    "no newlines": lambda k: f"KEY={k}",
+    "match at line 1 col 1": lambda k: f"{k}\nrest",
+    "match mid line": lambda k: f"a=1\nb=2\nKEY={k}\n",
+    "after blank lines": lambda k: f"\n\n\nKEY={k}",
+    "consecutive newlines": lambda k: f"x\n\n\n\nKEY={k}\n",
+    "trailing newline": lambda k: f"line\nKEY={k}\n",
+    "end of file, no newline": lambda k: f"line\nKEY={k}",
+    "two keys one line": lambda k: f"a={k} b={okey(7)}",
+    "adjacent lines": lambda k: f"K1={k}\nK2={okey(8)}",
+    "windows CRLF": lambda k: f"line1\r\nKEY={k}\r\nline3",
+    "many lines then key": lambda k: "\n".join(["x = 1"] * 2000) + f"\nKEY={k}",
+    "key then many lines": lambda k: f"KEY={k}\n" + "\n".join(["x = 1"] * 2000),
+    "empty file with key at 0": lambda k: k,
+    "leading newline": lambda k: f"\nKEY={k}",
+}
+
+
+@pytest.mark.parametrize("label", sorted(LINE_CASES))
+def test_line_numbers_match_legacy_arithmetic(tmp_path, label):
+    """Reported line/column must be byte-identical to the pre-optimisation result.
+
+    The index is a performance change only; a finder that reports a different
+    line number would silently mis-point every SARIF result and HTML report.
+    """
+    import re as _re  # noqa: F401  (used inside _legacy_positions)
+
+    auditor = APIAuditor(
+        "t",
+        RateLimiter(),
+        ProgressTracker(str(_unique_checkpoint(tmp_path))),
+        _build_args(confidence_threshold=40.0),
+    )
+    content = LINE_CASES[label](okey(0))
+    assert _positions(auditor, content) == _legacy_positions(content, OPENAI_KEY_PATTERN)
+
+
+def test_newline_index_is_reused_across_patterns(tmp_path):
+    """The per-file index must be built once, not once per provider pattern."""
+    from auditor.patterns import AWS_ACCESS_KEY_PATTERN
+
+    auditor = APIAuditor(
+        "t",
+        RateLimiter(),
+        ProgressTracker(str(_unique_checkpoint(tmp_path))),
+        _build_args(confidence_threshold=40.0),
+    )
+    content = (
+        "a\nb\nOPENAI_API_KEY=" + okey(0) + "\nAWS_ACCESS_KEY_ID=" + "AKIA" + "0123456789ABCDEF"
+    )
+    # Newline positions are the offsets OF the "\n" characters themselves.
+    expected_offsets = [i for i, ch in enumerate(content) if ch == "\n"]
+
+    auditor.extract_candidates(content, OPENAI_KEY_PATTERN)
+    cached_content, offsets = auditor._newline_cache
+    assert cached_content is content
+    assert offsets == expected_offsets
+
+    # A second pattern over the same content must hit the cache, not rebuild.
+    auditor.extract_candidates(content, AWS_ACCESS_KEY_PATTERN)
+    assert auditor._newline_cache[0] is content
+
+    # Different content invalidates it.
+    auditor.extract_candidates("x\ny", OPENAI_KEY_PATTERN)
+    assert auditor._newline_cache[0] == "x\ny"
+    assert auditor._newline_cache[1] == [1]
+
+
+def test_line_numbers_on_a_real_large_file(tmp_path):
+    """Spot-check against truth on a multi-thousand-line file."""
+    auditor = APIAuditor(
+        "t",
+        RateLimiter(),
+        ProgressTracker(str(_unique_checkpoint(tmp_path))),
+        _build_args(confidence_threshold=40.0),
+    )
+    lines = [f"line {i} = {i}" for i in range(5000)]
+    lines[4321] = f"OPENAI_API_KEY={okey(3)}"
+    content = "\n".join(lines)
+
+    assert _positions(auditor, content) == [(okey(3), 4322, 16)]
+
+
 # ~~~ Combined local tree scan ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~──────────────
+def okey(seed=0):
+    """A synthetic but high-entropy OpenAI-format key."""
+    import string
+
+    valid = string.ascii_letters + string.digits
+    return "sk-" + "".join(valid[(i * 17 + seed) % len(valid)] for i in range(48))
+
+
 def _unique_checkpoint(tmp_path, name="progress.json"):
     """A checkpoint path outside the scanned tree, unique to one test.
 
