@@ -1003,6 +1003,39 @@ async def test_local_tree_matches_per_provider_passes(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_local_tree_dry_run_reads_nothing(tmp_path, caplog):
+    """--dry-run must do discovery only: no file reads, no findings.
+
+    Regression: the combined local path replaced a loop that honoured
+    --dry-run, and the rewrite dropped the guard, so a dry run read every file
+    and produced real findings.
+    """
+    caplog.set_level(logging.INFO)
+    (tmp_path / "leak.env").write_text(f"OPENAI_API_KEY={okey()}\n", encoding="utf-8")
+    (tmp_path / "clean.py").write_text("x = 1\n", encoding="utf-8")
+
+    checkpoint = _unique_checkpoint(tmp_path)
+    args = _build_args(dry_run=True, checkpoint_file=str(checkpoint))
+    tracker = ProgressTracker(checkpoint_file=str(checkpoint))
+    auditor = APIAuditor("t", RateLimiter(), tracker, args)
+
+    reads = []
+    real_read_text = Path.read_text
+
+    def counting(self, *a, **k):
+        reads.append(self)
+        return real_read_text(self, *a, **k)
+
+    with patch.object(Path, "read_text", counting):
+        await auditor.audit_local_tree([("OpenAI", "sk-", OPENAI_KEY_PATTERN)], str(tmp_path))
+
+    assert not reads, f"dry run read {len(reads)} file(s)"
+    assert tracker.found_keys == []
+    # Discovery still ran, so the item count is reported.
+    assert any("[Dry run] 2 items for OpenAI" in msg for msg in caplog.messages)
+
+
+@pytest.mark.asyncio
 async def test_local_tree_skips_already_processed_files(tmp_path):
     """A resumed combined scan must not re-read files it already covered."""
     import string

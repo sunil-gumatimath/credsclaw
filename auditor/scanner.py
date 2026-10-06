@@ -589,6 +589,15 @@ class APIAuditor:
             logger.info("No scannable files found in %s", directory)
             return
 
+        if self.args.dry_run:
+            # Discovery only: no reads, no matching, no findings, no checkpoint.
+            logger.info(
+                "[Dry run] %s items for %s",
+                len(all_files),
+                ", ".join(entry[0] for entry in providers),
+            )
+            return
+
         # Pair each provider with its compiled pattern up front. An uncompilable
         # pattern drops the provider entirely, so the two lists stay aligned by
         # index for the rest of the function.
