@@ -414,8 +414,226 @@ class APIAuditor:
         return candidates
 
     # ------------------------------------------------------------------
-    # Validation
+    # Local scanning
     # ------------------------------------------------------------------
+    async def audit_local_directory(self, provider: str, pattern: str, directory: str) -> None:
+        """Recursive local directory scan for a single provider.
+
+        Thin wrapper over :meth:`audit_local_tree` so both entry points share
+        one implementation and cannot drift. Prefer ``audit_local_tree`` when
+        several providers are selected: it walks the tree once instead of once
+        per provider.
+        """
+        await self.audit_local_tree([(provider, "", pattern)], directory)
+
+    async def audit_local_tree(
+        self,
+        providers: list[tuple[str, str, str]],
+        directory: str,
+    ) -> None:
+        """Scan a local tree once, applying every provider pattern per file.
+
+        The per-provider path re-walked the tree and re-read every file once
+        *per provider*, so N providers cost N passes. This walks once and tests
+        each file against all patterns, making local scans linear in file count
+        rather than in (files x providers).
+
+        *providers* is a list of ``(display_name, search_prefix, pattern)``
+        tuples, i.e. the values of :data:`auditor.patterns.PROVIDER_CONFIGS`.
+        Only the search prefix is ignored here; local scans match on pattern.
+
+        Only file discovery and reading are shared. Each provider keeps its own
+        findings, stats, checkpoints, and validation pass, so a provider still
+        resumes independently and ``--providers`` semantics are unchanged.
+        """
+        if not providers:
+            return
+
+        dir_path = Path(directory)
+        if not dir_path.is_dir():
+            logger.error("Directory not found: %s", directory)
+            return
+
+        logger.info(
+            "Auditing %s API keys in local directory: %s",
+            ", ".join(entry[0] for entry in providers),
+            directory,
+        )
+
+        all_files = self._discover_local_files(dir_path)
+        if not all_files:
+            logger.info("No scannable files found in %s", directory)
+            return
+
+        # Pair each provider with its compiled pattern up front. An uncompilable
+        # pattern drops the provider entirely, so the two lists stay aligned by
+        # index for the rest of the function.
+        compiled: list[tuple[str, re.Pattern[str]]] = []
+        for provider_name, _search_prefix, pattern in providers:
+            try:
+                pattern_obj = _PATTERN_CACHE.get(pattern)
+                if pattern_obj is None:
+                    pattern_obj = re.compile(pattern)
+                    _PATTERN_CACHE[pattern] = pattern_obj
+            except re.error as exc:
+                logger.warning("Invalid regex pattern skipped: %s (%s)", pattern, exc)
+                continue
+            compiled.append((provider_name, pattern_obj))
+        if not compiled:
+            return
+
+        # Keys are bucketed by provider index so validation stays grouped the
+        # way batch_validate_keys expects.
+        keys_to_validate: dict[int, list[tuple[dict[str, Any], str]]] = {}
+
+        async def process_file(file_path: Path) -> None:
+            try:
+                content = file_path.read_text(encoding="utf-8", errors="ignore")
+            except Exception as exc:
+                logger.debug("Failed to read %s: %s", file_path, exc)
+                async with self.lock:
+                    for provider_name, _pattern_obj in compiled:
+                        self.progress.mark_processed(f"{provider_name}/{file_path}")
+                return
+
+            for idx, (provider_name, pattern_obj) in enumerate(compiled):
+                identifier = f"{provider_name}/{file_path}"
+                async with self.lock:
+                    if self.progress.is_processed(identifier):
+                        continue
+
+                local_candidates = self.extract_candidates(content, pattern_obj.pattern)
+
+                async with self.lock:
+                    bucket = keys_to_validate.setdefault(idx, [])
+                    for key, _context, confidence, severity, line_no, col_no in local_candidates:
+                        key_hash = fingerprint_key(key)
+                        key_data: dict[str, Any] = {
+                            "provider": provider_name,
+                            "key_hash": key_hash,
+                            "key_masked": mask_key(key),
+                            "repo": "local",
+                            "path": str(file_path.relative_to(dir_path)),
+                            "url": f"file://{file_path}",
+                            "line": line_no,
+                            "column": col_no,
+                            "timestamp": safe_utc_now(),
+                            "confidence": round(confidence, 2),
+                            "severity": severity,
+                            "valid": None,
+                        }
+                        if self.args.store_raw_keys:
+                            key_data["key"] = key
+                        self.progress.add_key(key_data)
+                        self._incr_stat(provider_name, "local")
+                        bucket.append((key_data, key))
+                    self.progress.mark_processed(identifier)
+                    self._checkpoint_if_due()
+
+        tasks = [asyncio.create_task(self._wrap_local_file(f, process_file)) for f in all_files]
+        iterator = asyncio.as_completed(tasks)
+        if tqdm:
+            iterator = tqdm(
+                iterator, total=len(tasks), desc=f"Scanning {len(providers)} providers (local)"
+            )
+        for coro in iterator:
+            try:
+                await coro
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.debug("Local file task failed: %s", exc)
+
+        if self.args.validate:
+            for idx, (provider_name, _pattern_obj) in enumerate(compiled):
+                bucket = keys_to_validate.get(idx, [])
+                if bucket:
+                    logger.info("Validating %s %s keys...", len(bucket), provider_name)
+                    await self.batch_validate_keys(bucket, provider_name)
+
+        self.progress.save_progress()
+
+    async def _wrap_local_file(self, file_path: Path, process_func) -> None:
+        """Bounded-concurrency wrapper mirroring ``_run_item_loop``'s guard."""
+        async with self.semaphore:
+            try:
+                await process_func(file_path)
+            except Exception as exc:
+                logger.debug("Local file processing failed for %s: %s", file_path, exc)
+
+    def _discover_local_files(self, dir_path: Path) -> list[Path]:
+        """Walk *dir_path* once, applying the size/extension/symlink filters."""
+        skip_extensions = {
+            ".pyc",
+            ".pyo",
+            ".pyd",
+            ".so",
+            ".dll",
+            ".exe",
+            ".bin",
+            ".jpg",
+            ".jpeg",
+            ".png",
+            ".gif",
+            ".ico",
+            ".bmp",
+            ".svg",
+            ".zip",
+            ".tar",
+            ".gz",
+            ".bz2",
+            ".7z",
+            ".rar",
+            ".pdf",
+            ".doc",
+            ".docx",
+            ".xls",
+            ".xlsx",
+            ".mp3",
+            ".mp4",
+            ".avi",
+            ".mov",
+            ".woff",
+            ".woff2",
+            ".ttf",
+            ".eot",
+            ".class",
+            ".o",
+            ".obj",
+        }
+
+        allowed_extensions = None
+        if self.args.extensions:
+            allowed_extensions = {
+                f".{ext.lstrip('.')}" for ext in parse_csv_arg(self.args.extensions)
+            }
+
+        all_files: list[Path] = []
+        for file_path in dir_path.rglob("*"):
+            if not file_path.is_file():
+                continue
+            # Skip symlinks to avoid loops / out-of-scope reads.
+            if file_path.is_symlink():
+                continue
+            # Skip hidden directories (e.g., .git, .venv), but NOT .github or hidden files like .env
+            parts = file_path.relative_to(dir_path).parts
+            if any(part.startswith(".") and part != ".github" for part in parts[:-1]):
+                continue
+            if file_path.suffix.lower() in skip_extensions:
+                continue
+            file_ext = file_path.suffix.lower() or f".{file_path.name.lstrip('.')}"
+            if allowed_extensions and file_ext not in allowed_extensions:
+                continue
+            # Skip very large files to avoid OOM.
+            try:
+                if file_path.stat().st_size > MAX_FILE_SIZE_BYTES:
+                    logger.debug(
+                        "Skipping large file %s (%s bytes)", file_path, file_path.stat().st_size
+                    )
+                    continue
+            except OSError:
+                continue
+            all_files.append(file_path)
+        return all_files
+
     async def batch_validate_keys(
         self, keys_data: list[tuple[dict[str, Any], str]], provider: str
     ) -> None:
@@ -720,139 +938,6 @@ class APIAuditor:
             pattern,
             process_commit,
             description=f"Auditing {provider} commits",
-        )
-
-    async def audit_local_directory(self, provider: str, pattern: str, directory: str) -> None:
-        """Recursive local directory scan."""
-        logger.info("Auditing %s API keys in local directory: %s", provider, directory)
-        dir_path = Path(directory)
-        if not dir_path.is_dir():
-            logger.error("Directory not found: %s", directory)
-            return
-
-        skip_extensions = {
-            ".pyc",
-            ".pyo",
-            ".pyd",
-            ".so",
-            ".dll",
-            ".exe",
-            ".bin",
-            ".jpg",
-            ".jpeg",
-            ".png",
-            ".gif",
-            ".ico",
-            ".bmp",
-            ".svg",
-            ".zip",
-            ".tar",
-            ".gz",
-            ".bz2",
-            ".7z",
-            ".rar",
-            ".pdf",
-            ".doc",
-            ".docx",
-            ".xls",
-            ".xlsx",
-            ".mp3",
-            ".mp4",
-            ".avi",
-            ".mov",
-            ".woff",
-            ".woff2",
-            ".ttf",
-            ".eot",
-            ".class",
-            ".o",
-            ".obj",
-        }
-
-        allowed_extensions = None
-        if self.args.extensions:
-            allowed_extensions = {
-                f".{ext.lstrip('.')}" for ext in parse_csv_arg(self.args.extensions)
-            }
-
-        all_files: list[Path] = []
-        for file_path in dir_path.rglob("*"):
-            if not file_path.is_file():
-                continue
-            # Skip symlinks to avoid loops / out-of-scope reads.
-            if file_path.is_symlink():
-                continue
-            # Skip hidden directories (e.g., .git, .venv), but NOT .github or hidden files like .env
-            parts = file_path.relative_to(dir_path).parts
-            if any(part.startswith(".") and part != ".github" for part in parts[:-1]):
-                continue
-            if file_path.suffix.lower() in skip_extensions:
-                continue
-            file_ext = file_path.suffix.lower() or f".{file_path.name.lstrip('.')}"
-            if allowed_extensions and file_ext not in allowed_extensions:
-                continue
-            # Skip very large files to avoid OOM.
-            try:
-                if file_path.stat().st_size > MAX_FILE_SIZE_BYTES:
-                    logger.debug(
-                        "Skipping large file %s (%s bytes)", file_path, file_path.stat().st_size
-                    )
-                    continue
-            except OSError:
-                continue
-            all_files.append(file_path)
-
-        async def process_file(
-            file_path: Path,
-            keys_to_validate: list[tuple[dict[str, Any], str]],
-        ) -> None:
-            identifier = f"{provider}/{file_path}"
-
-            async with self.lock:
-                if self.progress.is_processed(identifier):
-                    return
-
-            try:
-                content = file_path.read_text(encoding="utf-8", errors="ignore")
-            except Exception as exc:
-                logger.debug("Failed to read %s: %s", file_path, exc)
-                async with self.lock:
-                    self.progress.mark_processed(identifier)
-                return
-
-            local_candidates = self.extract_candidates(content, pattern)
-
-            async with self.lock:
-                for key, _context, confidence, severity, line_no, col_no in local_candidates:
-                    key_hash = fingerprint_key(key)
-                    key_data: dict[str, Any] = {
-                        "provider": provider,
-                        "key_hash": key_hash,
-                        "key_masked": mask_key(key),
-                        "repo": "local",
-                        "path": str(file_path.relative_to(dir_path)),
-                        "url": f"file://{file_path}",
-                        "line": line_no,
-                        "column": col_no,
-                        "timestamp": safe_utc_now(),
-                        "confidence": round(confidence, 2),
-                        "severity": severity,
-                        "valid": None,
-                    }
-                    if self.args.store_raw_keys:
-                        key_data["key"] = key
-                    self.progress.add_key(key_data)
-                    self._incr_stat(provider, "local")
-                    keys_to_validate.append((key_data, key))
-                self.progress.mark_processed(identifier)
-                self._checkpoint_if_due()
-
-        await self._run_item_loop(
-            all_files,
-            provider,
-            pattern,
-            process_file,
-            description=f"Scanning {provider} (local)",
         )
 
     async def audit_git_history(self, provider: str, pattern: str, directory: str) -> None:

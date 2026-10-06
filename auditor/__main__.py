@@ -156,23 +156,30 @@ async def main() -> None:
                 # Append extension filters to each suffix chunk
                 suffix_chunks = [s + ext_filter for s in suffix_chunks]
 
-            provider_tasks = []
+            # Resolve every selected provider up front. Local mode needs the
+            # whole set in one pass; the GitHub modes consume them one by one.
+            selected_configs = []
             for provider_key in selected:
                 config_entry = PROVIDER_CONFIGS.get(provider_key)
                 if not config_entry:
                     logger.warning("Unknown provider: %s, skipping", provider_key)
                     continue
-                name, search_term, pattern = config_entry
+                selected_configs.append(config_entry)
 
+            provider_tasks = []
+            if args.mode == "local":
+                if not args.dir:
+                    raise ValueError("--dir is required for local mode")
+                if selected_configs:
+                    provider_tasks.append(auditor.audit_local_tree(selected_configs, args.dir))
+
+            for name, search_term, pattern in selected_configs:
                 for suffix in suffix_chunks:
                     query = f"{search_term}{suffix}"
 
                     if args.mode == "local":
-                        if not args.dir:
-                            raise ValueError("--dir is required for local mode")
-                        provider_tasks.append(
-                            auditor.audit_local_directory(name, pattern, args.dir)
-                        )
+                        # Already handled above as a single combined pass.
+                        continue
                     elif args.mode == "git-history":
                         if not args.dir:
                             raise ValueError("--dir is required for git-history mode")

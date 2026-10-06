@@ -215,6 +215,8 @@ Recursively scans all files in a local directory. Skips symlinks, files larger t
 python -m auditor --mode local --dir . --providers aws,github --output-format html
 ```
 
+The tree is walked **once** and every selected provider's pattern is applied to each file, so cost scales with the number of files rather than files × providers. Each provider still keeps its own findings, stats, and checkpoint entries, so `--resume` and per-provider validation behave exactly as before.
+
 ### `git-history` — Local Git History Scan
 
 Runs `git log --all` and inspects every commit's diff content for exposed keys. Useful for finding keys that were committed and later removed.
