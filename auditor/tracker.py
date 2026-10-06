@@ -31,6 +31,10 @@ class ProgressTracker:
         # Locations per key hash, so a secret reused across repos/files is
         # reported once with every occurrence retained (see add_key).
         self.locations_by_hash: dict[str, list[dict[str, Any]]] = {}
+        # key_hash -> the found_keys entry that owns it. Lets add_key merge a
+        # repeat sighting in O(1) instead of scanning found_keys, which was
+        # quadratic in the number of secrets.
+        self.entry_by_hash: dict[str, dict[str, Any]] = {}
         self.load_progress()
 
     @staticmethod
@@ -83,6 +87,7 @@ class ProgressTracker:
                         item["locations"] = locations
                     item.setdefault("occurrences", len(locations))
                     self.locations_by_hash.setdefault(key_hash, list(locations))
+                    self.entry_by_hash.setdefault(key_hash, item)
 
             logger.info(
                 "Resumed: %s items processed, %s keys found",
@@ -158,17 +163,25 @@ class ProgressTracker:
             key_data["locations"] = [location]
             key_data["occurrences"] = 1
             self.found_keys.append(key_data)
+            self.entry_by_hash[key_hash] = key_data
             return
 
         # Already known: record the extra location instead of dropping it.
         known = self.locations_by_hash.setdefault(key_hash, [])
         if location not in known:
             known.append(location)
-        for entry in self.found_keys:
-            if entry.get("key_hash") == key_hash:
-                entry["locations"] = known
-                entry["occurrences"] = len(known)
-                break
+        entry = self.entry_by_hash.get(key_hash)
+        if entry is None:
+            # A checkpoint loaded before the index existed, or a key first seen
+            # via the seen_hashes backfill. Fall back to the linear scan.
+            for candidate in self.found_keys:
+                if candidate.get("key_hash") == key_hash:
+                    entry = candidate
+                    break
+        if entry is not None:
+            entry["locations"] = known
+            entry["occurrences"] = len(known)
+            self.entry_by_hash.setdefault(key_hash, entry)
 
     def occurrences(self, key_hash: str) -> int:
         """Number of distinct locations recorded for a key hash."""
