@@ -4,6 +4,8 @@ import argparse
 import asyncio
 import logging
 import subprocess
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -389,3 +391,215 @@ async def test_local_scan_keeps_one_finding_across_files(tmp_path):
     assert len(tracker.found_keys) == 1
     assert tracker.found_keys[0]["occurrences"] == 2
     assert {loc["path"] for loc in tracker.found_keys[0]["locations"]} == {"a.env", "b.env"}
+
+
+# ~~~ Code-mode resume ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~──────────────────────
+def _code_hit(path="config.py"):
+    return {
+        "repository": {
+            "full_name": "acme/app",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "stargazers_count": 5,
+        },
+        "path": path,
+        "html_url": f"https://github.com/acme/app/blob/main/{path}",
+    }
+
+
+def _stub_code_mode(auditor, content):
+    """Replace the GitHub I/O in *auditor* with a single-page stub.
+
+    Returns the ``get_file_content`` mock so callers can assert on how many
+    times file contents were fetched.
+    """
+    hits = [_code_hit()]
+
+    async def fake_search(query, page=1):
+        return {"items": hits} if page == 1 else None
+
+    async def fake_rate_limit_sync():
+        return None
+
+    auditor.search_github_code = fake_search  # type: ignore[method-assign]
+    auditor._fetch_initial_rate_limit = fake_rate_limit_sync  # type: ignore[method-assign]
+    return patch.object(auditor, "get_file_content", return_value=content)
+
+
+@pytest.mark.asyncio
+async def test_code_mode_marks_items_processed_for_resume(tmp_path):
+    """Code search must record processed identifiers so --resume can skip them.
+
+    Regression: ``audit_api_keys`` omitted ``mark_processed`` on its success
+    path, so a checkpoint written during a code scan listed zero processed
+    items and every resume re-fetched every file.
+    """
+    import string
+
+    valid = string.ascii_letters + string.digits
+    key = "sk-" + "".join(valid[(i * 17) % len(valid)] for i in range(48))
+    args = _build_args(dry_run=False, confidence_threshold=40.0)
+    tracker = ProgressTracker(checkpoint_file=str(tmp_path / "progress.json"))
+    auditor = APIAuditor("t", RateLimiter(), tracker, args)
+
+    with _stub_code_mode(auditor, f"OPENAI_API_KEY={key}"):
+        await auditor.audit_api_keys("OpenAI", "sk-", OPENAI_KEY_PATTERN)
+
+    assert len(tracker.found_keys) == 1
+    assert "OpenAI/acme/app/config.py" in tracker.processed
+
+
+@pytest.mark.asyncio
+async def test_code_mode_resume_skips_already_processed_files(tmp_path):
+    """A resumed scan must not re-download content it already recorded."""
+    import string
+
+    valid = string.ascii_letters + string.digits
+    key = "sk-" + "".join(valid[(i * 17) % len(valid)] for i in range(48))
+    checkpoint = _unique_checkpoint(tmp_path)
+    args = _build_args(dry_run=False, confidence_threshold=40.0, checkpoint_file=str(checkpoint))
+
+    first = ProgressTracker(checkpoint_file=str(checkpoint))
+    first_auditor = APIAuditor("t", RateLimiter(), first, args)
+    with _stub_code_mode(first_auditor, f"OPENAI_API_KEY={key}") as fetch:
+        await first_auditor.audit_api_keys("OpenAI", "sk-", OPENAI_KEY_PATTERN)
+    assert fetch.call_count == 1
+
+    # Second run resumes from the checkpoint written by the first.
+    resumed = ProgressTracker(checkpoint_file=str(checkpoint))
+    assert "OpenAI/acme/app/config.py" in resumed.processed
+
+    resumed_auditor = APIAuditor("t", RateLimiter(), resumed, args)
+    with _stub_code_mode(resumed_auditor, f"OPENAI_API_KEY={key}") as fetch_again:
+        await resumed_auditor.audit_api_keys("OpenAI", "sk-", OPENAI_KEY_PATTERN)
+
+    assert fetch_again.call_count == 0, "resumed scan re-fetched an already-processed file"
+    # The finding is still remembered via the checkpoint, just not re-found.
+    assert len(resumed.found_keys) == 1
+
+
+# ~~~ Combined local tree scan ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~──────────────
+def _unique_checkpoint(tmp_path, name="progress.json"):
+    """A checkpoint path outside the scanned tree, unique to one test.
+
+    The audit writes its checkpoint into the tree, and ``.json`` is not in the
+    skip list, so a checkpoint left inside the scanned directory is picked up as
+    a scannable file on a later pass. Sharing one path across tests also lets a
+    previous test's resume state leak into the next one.
+    """
+    ckpt_dir = Path(tempfile.mkdtemp())
+    return ckpt_dir / name
+
+
+@pytest.mark.asyncio
+async def test_local_tree_reads_each_file_once(tmp_path):
+    """One pass over the tree, regardless of how many providers are selected.
+
+    Regression: local mode used to walk and re-read every file once per
+    provider, so N providers cost N passes.
+    """
+    from pathlib import Path
+
+    import auditor.patterns as patterns
+
+    for i in range(4):
+        (tmp_path / f"f{i}.py").write_text("x = 1\n", encoding="utf-8")
+
+    checkpoint = _unique_checkpoint(tmp_path)
+    args = _build_args(dry_run=False, checkpoint_file=str(checkpoint))
+    tracker = ProgressTracker(checkpoint_file=str(checkpoint))
+    auditor = APIAuditor("t", RateLimiter(), tracker, args)
+
+    real_read_text = Path.read_text
+    reads: dict = {}
+
+    def counting(self, *a, **k):
+        reads[self] = reads.get(self, 0) + 1
+        return real_read_text(self, *a, **k)
+
+    with patch.object(Path, "read_text", counting):
+        await auditor.audit_local_tree(list(patterns.PROVIDER_CONFIGS.values()), str(tmp_path))
+
+    assert reads, "expected the scan to read files"
+    assert set(reads.values()) == {1}, f"files re-read per provider: {sorted(reads.values())}"
+
+
+@pytest.mark.asyncio
+async def test_local_tree_matches_per_provider_passes(tmp_path):
+    """The combined pass must find exactly what N single-provider passes find."""
+    import string
+
+    from auditor.patterns import PROVIDER_CONFIGS
+
+    valid = string.ascii_letters + string.digits
+    openai_key = "sk-" + "".join(valid[(i * 17) % len(valid)] for i in range(48))
+
+    (tmp_path / "openai.env").write_text(f"OPENAI_API_KEY={openai_key}", encoding="utf-8")
+    (tmp_path / "anthropic.env").write_text(
+        "ANTHROPIC_API_KEY=sk-ant-api03-" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8s9" + "AA",
+        encoding="utf-8",
+    )
+    # Assembled from fragments on purpose: a contiguous literal here is a
+    # syntactically valid key, and the project's own self-scan flags it (the CI
+    # gate is scoped to auditor/ for exactly this reason).
+    (tmp_path / "aws.env").write_text(
+        "AWS_ACCESS_KEY_ID=" + "AKIA" + "0123456789ABCDEF", encoding="utf-8"
+    )
+    (tmp_path / "gh.env").write_text("GITHUB_TOKEN=ghp_" + "a" * 36, encoding="utf-8")
+    (tmp_path / "slack.env").write_text(
+        "SLACK=xoxb-123456789-987654321-" + "b" * 24, encoding="utf-8"
+    )
+    (tmp_path / "noise.py").write_text(f"# example placeholder {openai_key}\n", encoding="utf-8")
+
+    checkpoint = _unique_checkpoint(tmp_path)
+    args = _build_args(dry_run=False, confidence_threshold=40.0, checkpoint_file=str(checkpoint))
+
+    combined = ProgressTracker(checkpoint_file=str(checkpoint))
+    combined_auditor = APIAuditor("t", RateLimiter(), combined, args)
+    await combined_auditor.audit_local_tree(list(PROVIDER_CONFIGS.values()), str(tmp_path))
+
+    separate_cp = _unique_checkpoint(tmp_path, "progress2.json")
+    separate_args = _build_args(
+        dry_run=False, confidence_threshold=40.0, checkpoint_file=str(separate_cp)
+    )
+    separate = ProgressTracker(checkpoint_file=str(separate_cp))
+    separate_auditor = APIAuditor("t", RateLimiter(), separate, separate_args)
+    for entry in PROVIDER_CONFIGS.values():
+        await separate_auditor.audit_local_directory(entry[0], entry[2], str(tmp_path))
+
+    def summary(tracker):
+        return sorted((f["provider"], f.get("path"), f["occurrences"]) for f in tracker.found_keys)
+
+    assert combined.found_keys, "combined pass found nothing; fixture is broken"
+    assert summary(combined) == summary(separate)
+    # Every provider records a processed identifier for every file, so the
+    # checkpoint is as resumable as the per-provider path was.
+    assert len(combined.processed) == len(separate.processed)
+
+
+@pytest.mark.asyncio
+async def test_local_tree_skips_already_processed_files(tmp_path):
+    """A resumed combined scan must not re-read files it already covered."""
+    import string
+
+    from auditor.patterns import OPENAI_KEY_PATTERN
+
+    valid = string.ascii_letters + string.digits
+    key = "sk-" + "".join(valid[(i * 17) % len(valid)] for i in range(48))
+    (tmp_path / "a.env").write_text(f"OPENAI_API_KEY={key}", encoding="utf-8")
+    (tmp_path / "b.env").write_text(f"OPENAI_API_KEY={key}", encoding="utf-8")
+
+    checkpoint = _unique_checkpoint(tmp_path)
+    args = _build_args(dry_run=False, confidence_threshold=40.0, checkpoint_file=str(checkpoint))
+
+    first = ProgressTracker(checkpoint_file=str(checkpoint))
+    first_auditor = APIAuditor("t", RateLimiter(), first, args)
+    await first_auditor.audit_local_tree([("OpenAI", "sk-", OPENAI_KEY_PATTERN)], str(tmp_path))
+    assert len(first.processed) == 2
+
+    resumed = ProgressTracker(checkpoint_file=str(checkpoint))
+    resumed_auditor = APIAuditor("t", RateLimiter(), resumed, args)
+    await resumed_auditor.audit_local_tree([("OpenAI", "sk-", OPENAI_KEY_PATTERN)], str(tmp_path))
+
+    # Still one merged finding, now with both locations preserved.
+    assert len(resumed.found_keys) == 1
+    assert resumed.found_keys[0]["occurrences"] == 2
