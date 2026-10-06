@@ -15,8 +15,10 @@ repos:
     hooks:
       - id: credsclaw
         name: CredsClaw
-        description: Scans staged files for exposed API keys and secrets
-        entry: python -m auditor --mode local --dir . --confidence-threshold 60.0 --dry-run
+        # Scoped to the shipped package: tests/ holds synthetic key literals
+        # that are indistinguishable from live ones, so a whole-tree gate
+        # would block on this repo's own fixtures.
+        entry: python -m auditor --mode local --dir auditor --confidence-threshold 60.0 --fail-on-findings
         language: system
         types: [text]
         pass_filenames: false
