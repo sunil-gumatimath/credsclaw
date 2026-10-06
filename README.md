@@ -47,7 +47,7 @@
 | **Encrypted output** | Fernet-symmetric encryption for sensitive results |
 | **Pre-commit integration** | Built in `.pre-commit-config.yaml` generation |
 | **YAML config** | Persistent configuration with CLI override precedence |
-| **Dry-run mode** | List/scope items only: no content fetch, no matching, no validation, no export |
+| **Dry-run mode** | Counts the items in scope and stops: no file reads, no matching, no validation, no export |
 | **Allow / deny patterns** | Regex filtering — deny always wins; allow narrows scope and can surface noise-flagged candidates |
 | **Shared validation sessions** | Reuses a single `aiohttp.ClientSession` per batch for efficient live validation |
 
@@ -148,7 +148,7 @@ python -m auditor --repo owner/repo --providers all --validate
 | `--output-file` | `output/audit_results.{ext}` | Custom output path |
 | `--confidence-threshold` | `50.0` | Minimum score (0-100) to report a finding |
 | `--validate` | off | Ping provider APIs to confirm keys are live |
-| `--dry-run` | off | List/scope items only: no content fetch, no matching, no validation, no export, no checkpoint write (CI gates skipped, always exit 0) |
+| `--dry-run` | off | Discovery only: counts the items in scope and stops. No file reads, no matching, no validation, no export, no checkpoint write (CI gates skipped, always exit 0). Enforced in all four modes |
 | `--max-concurrency` | `10` | Parallel file processors |
 | `--store-raw-keys` | off | Store raw keys in output (unsafe, use encryption) |
 | `--encrypt-output` | off | Encrypt results with Fernet |
@@ -159,9 +159,9 @@ python -m auditor --repo owner/repo --providers all --validate
 | `--config` | `auditor.yaml` | YAML configuration file path |
 | `--recent-repos-days` | (empty) | Discover repos pushed to in last N days (mode: `code`/`commits` only) |
 | `--resume` | off | Continue from previous checkpoint (without `--resume`/`--since-checkpoint`, an existing checkpoint file is deleted at startup; requesting a resume with no checkpoint warns and starts fresh). All four scan modes record every processed identifier, so a resumed run skips files it already covered instead of re-fetching them |
-| `--checkpoint-file` | `output/progress.json` | Path to checkpoint file |
+| `--checkpoint-file` | `output/progress.json` | Path to checkpoint file. Processed identifiers are written to a `<path>.processed` sidecar alongside it |
 | `--since-checkpoint` | off | Only process items newer than checkpoint timestamp |
-| `--checkpoint-interval` | `25` | Save checkpoint every N processed items. The whole checkpoint (findings + processed identifiers) is rewritten each time, so on very large scans this is O(n²) in total I/O — raise the interval if you are scanning tens of thousands of files |
+| `--checkpoint-interval` | `25` | Save checkpoint every N processed items. Findings are rewritten in full each time, so total I/O still grows quadratically with finding count — raise the interval (e.g. `200`) when scanning tens of thousands of files |
 | `--timeout` | `10` | Validation request timeout in seconds |
 | `--allow-patterns` | (empty) | Comma-separated regex allow patterns |
 | `--deny-patterns` | (empty) | Comma-separated regex deny patterns |
@@ -236,6 +236,8 @@ Implemented by `APIAuditor.audit_local_tree()`. The tree is walked **once** and 
 Only discovery and reading are shared. Each provider keeps its own findings, stats, checkpoint identifiers (`{provider}/{file}`), and validation pass, so `--resume`, per-provider `--validate`, and `--providers` semantics are unchanged. `audit_local_directory()` is a thin single-provider wrapper over the same method, so the two paths cannot drift.
 
 With `--providers all` (7 providers) on a 47-file tree, this is 7 file reads instead of 329.
+
+Candidate extraction also builds the file's newline-offset index once and reuses it across all seven provider patterns, so line/column reporting is paid for once per file rather than per (provider × match).
 
 ### `git-history` — Local Git History Scan
 
@@ -459,7 +461,7 @@ auditor/                        # Installable Python package
 ├── scanner.py                  # APIAuditor — all 4 scan modes (local/git-history use single-pass combined variants)
 ├── validator.py                # Live API validation (shared bearer helper + per-provider verdicts)
 ├── exporter.py                 # JSON/CSV/TXT/HTML/SARIF export + summary printer
-├── tracker.py                  # Checkpoint/resume state, dedupe via hash index, occurrence tracking
+├── tracker.py                  # Checkpoint/resume state, dedupe via hash index, occurrence tracking, processed sidecar
 ├── cli.py                      # Argparse builder, config merge, pre-commit hook
 ├── config.py                   # YAML config file loader
 ├── rate_limiter.py             # Token-bucket rate limiter (+ exponential backoff) to prevent concurrent-task quota exhaustion
@@ -520,6 +522,10 @@ flowchart TD
 | **Shared validation sessions** | `batch_validate_keys()` creates one `aiohttp.ClientSession` per provider batch, eliminating TCP connection spam |
 | **Single-pass local modes** | `local` and `git-history` read their target once and fan out patterns per file/commit. Both per-provider entry points are thin wrappers over the combined methods, so there is one implementation per mode and no drift. Equivalence is asserted by running both paths over the same target and comparing finding sets |
 | **Content cache keyed on blob SHA** | Keying on `(repo, path, blob_sha)` rather than `(repo, path)` is what makes caching safe: an edited file must never be reported from stale content. The byte budget, not just an entry cap, bounds growth |
+| **Line numbers via a per-file newline index** | Counting `content[:match.start()].count("\n")` per match was O(n×m). Newline offsets are built once per file with `str.find` (C-speed, ~9ms on 8MB vs ~245ms for a Python-level scan) and located per match by binary search, then memoised so all provider passes over a file share one index. Measured 3.1–3.6× faster end to end; a parametrised test pins the reported line/column against the old arithmetic, since a wrong line silently mis-points every SARIF result |
+| **Processed identifiers in a sidecar** | They are the bulk of the checkpoint and only ever grow, so a newline-delimited append-only file keeps each save proportional to the findings. An append that rewrote the whole file measured *slower* than the single-file format, so the append is a real `O_APPEND` write — and skips `fsync`, since a checkpoint is a resume aid, not a durability log |
+| **Checkpoint writes serialised** | Multiple scan tasks can reach the interval threshold together; without a guard the slower write can land last carrying less state, silently dropping findings the checkpoint claims to have covered. `os.replace` keeps the file valid, so this was lost progress, not corruption |
+| **`--dry-run` re-asserted per mode** | Rewriting a scan path can silently drop the guard that made `--dry-run` a no-op. Each combined entry point now checks it directly, and a test asserts zero file reads rather than trusting the flag's name |
 | **Per-provider checkpoints everywhere** | All four modes record a processed identifier on the success path, not just on early-return paths. Without this, `--resume` re-fetched every code-search result while the checkpoint claimed to cover them |
 | **`_run_item_loop` extracted** | Removes ~30 lines of duplicated loop/validation/save/log code from each scan method |
 | **Rate-limit sync on non-discovery scans** | `_fetch_initial_rate_limit()` called in `audit_api_keys()` and `audit_commit_messages()` ensures the token bucket starts at the correct level |
@@ -589,7 +595,7 @@ Two deliberate choices worth knowing before you widen either scope:
 - **Single Responsibility** — each module has one concern (scoring, validation, export…)
 - **No Circular Imports** — layered flow centered on `scanner` (`cli/config → scanner → validator/exporter/tracker`), with shared `utils`/`patterns`/`scoring` underneath
 - **Async First** — `asyncio.gather` + `Semaphore` for parallel provider scans
-- **Test Coverage** — 190 tests, ~65% overall. `patterns.py` is at 100% and `tracker.py` at 93%; `validator.py` (~31%) and `exporter.py` (~41%) remain thin, since exercising live-validation paths needs mocked HTTP and the exporters have many output-shape branches. `scanner.py` sits at ~58% — the GitHub search paths still need mocked API responses.
+- **Test Coverage** — 213 tests, ~66% overall. `patterns.py` is at 100% and `tracker.py` at 93%; `validator.py` (~31%) and `exporter.py` (~41%) remain thin, since exercising live-validation paths needs mocked HTTP and the exporters have many output-shape branches. `scanner.py` sits at ~58% — the GitHub search paths still need mocked API responses.
 
 ---
 
@@ -627,6 +633,21 @@ GitHub allows 10–30 requests per minute for search, depending on your token's 
 **Q: How do I make CredsClaw fail a build or commit when secrets are found?**
 
 Use `--fail-on-findings` to exit with code 2 when any finding meets the confidence threshold, or `--fail-on-severity HIGH` to only fail when a finding reaches a given severity tier. Exit code 0 means the scan was clean. Gates are skipped under `--dry-run` (always exit 0 barring errors); unexpected errors exit 1. This powers the generated pre-commit hook and CI gatekeeper checks (e.g., GitHub Actions).
+
+**Q: What files does a scan leave behind?**
+
+With the default `--checkpoint-file`, three:
+
+- `output/progress.json` — findings, seen hashes, timestamp
+- `output/progress.json.processed` — processed identifiers, one per line (appended, not rewritten)
+- `output/audit.log` — the run log
+
+The sidecar exists because processed identifiers are bulk data that only grows: keeping them out of the main checkpoint means each save rewrites only the findings. Checkpoints written by older versions kept everything in one file with an inline `processed` array; those still load, and the next save migrates them to the sidecar.
+
+Two deliberate consequences:
+
+- **Deleting only `progress.json` is not enough to start fresh.** The sidecar would make the scan skip everything it had "already" processed. `--resume`-less runs remove both files automatically; if you clear state by hand, delete the `.processed` file too.
+- **A crash can leave a truncated final line.** It is discarded on load, so the worst case is re-scanning the last interval's items — the safe direction to fail.
 
 **Q: Which providers were removed?**
 
