@@ -33,6 +33,8 @@ audit_results.json
 audit_results.csv
 audit_results.txt
 audit_results.html
+audit_results.sarif
+*.sarif
 *.enc
 .idea/
 .vscode/

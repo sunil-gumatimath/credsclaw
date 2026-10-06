@@ -71,5 +71,21 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e .
 
-      - name: Estimate secret exposure in the working tree
+      - name: Self-scan the shipped source for exposed credentials
+        # Scoped to the package rather than the whole repo: tests/ holds
+        # synthetic keys built from fragments that are syntactically
+        # indistinguishable from live ones, so a whole-tree gate would fail on
+        # its own fixtures and train everyone to ignore a red build.
+        # NOTE: --dry-run must NOT be added here; it short-circuits before
+        # scanning, which made this step unfailable before it was a gate.
+        run: >-
+          python -m auditor
+          --mode local
+          --dir auditor
+          --providers all
+          --confidence-threshold 60.0
+          --fail-on-findings
+          --output-file output/self_scan.json
+
+      - name: Estimate secret exposure in the working tree (informational)
         run: python -m auditor --mode local --dir . --providers all --confidence-threshold 60.0 --dry-run
