@@ -32,6 +32,131 @@ def test_save_and_load_progress(tmp_path):
     assert "key" not in tracker2.found_keys[0]
 
 
+# ~~~ Processed-identifier sidecar ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~─────────
+def test_processed_goes_to_sidecar_not_main_checkpoint(tmp_path):
+    """`processed` is bulk data, so it lives in its own file."""
+    checkpoint = tmp_path / "progress.json"
+    tracker = ProgressTracker(str(checkpoint))
+    tracker.add_key({"key_hash": "h1", "provider": "test", "timestamp": "now"})
+    tracker.mark_processed("item1")
+    tracker.save_progress()
+
+    payload = json.loads(checkpoint.read_text(encoding="utf-8"))
+    assert "processed" not in payload, "processed should be split out of the main checkpoint"
+    assert "found_keys" in payload
+
+    sidecar = tmp_path / "progress.json.processed"
+    assert sidecar.exists()
+    assert sidecar.read_text(encoding="utf-8").splitlines() == ["item1"]
+
+
+def test_sidecar_accumulates_across_saves(tmp_path):
+    """Each save must append, so nothing is lost between checkpoints."""
+    checkpoint = tmp_path / "progress.json"
+    tracker = ProgressTracker(str(checkpoint))
+    for i in range(5):
+        tracker.mark_processed(f"item{i}")
+    tracker.save_progress()
+
+    for i in range(5, 12):
+        tracker.mark_processed(f"item{i}")
+        tracker.save_progress()
+
+    disk = (tmp_path / "progress.json.processed").read_text(encoding="utf-8").splitlines()
+    assert sorted(disk) == sorted(tracker.processed)
+    assert len(disk) == len(set(disk)), "sidecar must not accumulate duplicates"
+    assert len(disk) == 12
+
+
+def test_resume_restores_every_processed_identifier(tmp_path):
+    """A tracker reloaded from disk must know every identifier, not a subset."""
+    checkpoint = tmp_path / "progress.json"
+    tracker = ProgressTracker(str(checkpoint))
+    tracker.add_key({"key_hash": "h1", "provider": "test", "timestamp": "now"})
+    for i in range(200):
+        tracker.mark_processed(f"OpenAI/repo{i}/file.py")
+    tracker.save_progress()
+    for i in range(200, 500):
+        tracker.mark_processed(f"OpenAI/repo{i}/file.py")
+        tracker.save_progress()
+
+    resumed = ProgressTracker(str(checkpoint))
+    assert resumed.processed == tracker.processed
+    assert len(resumed.processed) == 500
+    assert len(resumed.found_keys) == 1
+
+
+def test_legacy_inline_processed_still_loads(tmp_path):
+    """Checkpoints written before the split keep working."""
+    checkpoint = tmp_path / "progress.json"
+    checkpoint.write_text(
+        json.dumps(
+            {
+                "processed": ["old1", "old2"],
+                "found_keys": [{"key_hash": "h1", "provider": "test", "timestamp": "now"}],
+                "seen_keys": [{"key_hash": "h1"}],
+                "timestamp": "2026-01-01T00:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    tracker = ProgressTracker(str(checkpoint))
+    assert tracker.is_processed("old1")
+    assert tracker.is_processed("old2")
+
+    # Saving migrates the inline set into the sidecar.
+    tracker.save_progress()
+    assert "processed" not in json.loads(checkpoint.read_text(encoding="utf-8"))
+    assert sorted((tmp_path / "progress.json.processed").read_text().splitlines()) == [
+        "old1",
+        "old2",
+    ]
+
+
+def test_truncated_final_sidecar_line_is_discarded(tmp_path):
+    """A crash mid-append must not leave a truncated identifier marked processed."""
+    checkpoint = tmp_path / "progress.json"
+    tracker = ProgressTracker(str(checkpoint))
+    tracker.add_key({"key_hash": "h1", "provider": "test", "timestamp": "now"})
+    tracker.mark_processed("good1")
+    tracker.mark_processed("good2")
+    tracker.save_progress()
+
+    # Simulate a kill partway through appending the next identifier.
+    sidecar = tmp_path / "progress.json.processed"
+    with open(sidecar, "a", encoding="utf-8") as f:
+        f.write("OpenAI/repo/file.p")
+
+    resumed = ProgressTracker(str(checkpoint))
+    assert resumed.is_processed("good1")
+    assert resumed.is_processed("good2")
+    assert not resumed.is_processed("OpenAI/repo/file.p")
+    # Only the two intact identifiers survive.
+    assert resumed.processed == {"good1", "good2"}
+
+
+def test_clear_processed_removes_sidecar(tmp_path):
+    """Clearing processed state must not leave a stale sidecar behind."""
+    checkpoint = tmp_path / "progress.json"
+    tracker = ProgressTracker(str(checkpoint))
+    tracker.mark_processed("item1")
+    tracker.save_progress()
+    sidecar = tmp_path / "progress.json.processed"
+    assert sidecar.exists()
+
+    tracker.clear_processed()
+    assert tracker.processed == set()
+    assert not sidecar.exists()
+
+    # A later save must not resurrect the cleared identifier.
+    tracker.mark_processed("item2")
+    tracker.save_progress()
+    assert sidecar.read_text(encoding="utf-8").splitlines() == ["item2"]
+
+    resumed = ProgressTracker(str(checkpoint))
+    assert resumed.processed == {"item2"}
+
+
 def test_atomic_write_survives_crash(tmp_path, monkeypatch):
     checkpoint = tmp_path / "progress.json"
     tracker = ProgressTracker(str(checkpoint))

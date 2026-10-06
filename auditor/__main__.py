@@ -90,9 +90,17 @@ async def main() -> None:
                 raise ValueError("GitHub token is required")
 
         checkpoint_path = Path(args.checkpoint_file)
+        processed_path = Path(f"{args.checkpoint_file}.processed")
         if not args.resume and not args.since_checkpoint and checkpoint_path.exists():
-            logger.warning("Removing existing checkpoint file: %s", args.checkpoint_file)
+            # The processed-identifier sidecar must go too: leaving it behind
+            # would make the fresh scan skip everything it had already "seen".
+            logger.warning(
+                "Removing existing checkpoint file: %s (and %s)",
+                args.checkpoint_file,
+                processed_path,
+            )
             checkpoint_path.unlink()
+            processed_path.unlink(missing_ok=True)
         elif (args.resume or args.since_checkpoint) and not checkpoint_path.exists():
             # Silently starting fresh here looks like a successful resume while
             # re-scanning everything from the beginning.
