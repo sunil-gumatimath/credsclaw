@@ -54,30 +54,6 @@ FORMAT_CASES = [
     ("slack", True, "xwfp-1-abcdef-" + "g" * 24),
     ("slack", True, "https://hooks.slack.com/services/T00000000/B00000000/" + "H" * 24),
     ("slack", False, "xoxb-123"),
-    # --- HuggingFace: hf_ + 34..64 --------------------------------------
-    ("huggingface", True, "hf_" + "a" * 34),
-    ("huggingface", True, "hf_" + "b" * 40),
-    ("huggingface", True, "hf_" + "c" * 60),
-    ("huggingface", False, "hf_short"),
-    # --- Cloudflare: 2026 scannable prefixes + 40-char body + checksum ---
-    ("cloudflare", True, "cfk_" + "a" * 30 + "0123456789ab"),
-    ("cloudflare", True, "cfut_" + "b" * 30 + "abcdef012345"),
-    ("cloudflare", True, "cfat_" + "c" * 30 + "0123456789AF"),
-    ("cloudflare", True, "cft_" + "d" * 30 + "beefcafe1234"),
-    ("cloudflare", False, "cfk_short"),
-    # --- Remaining AI providers ------------------------------------------
-    ("replicate", True, "r8_" + "a" * 37),
-    ("replicate", False, "r8_" + "a" * 10),
-    ("groq", True, "gsk_" + "a" * 52),
-    ("groq", True, "gsk_" + "b" * 30),
-    ("groq", False, "gsk_short"),
-    ("openrouter", True, "sk-or-v1-" + "a" * 64),
-    ("openrouter", True, "sk-or-" + "b" * 40),
-    ("openrouter", False, "sk-or-short"),
-    ("together", True, "together_" + "a" * 40),
-    ("together", False, "together_short"),
-    ("mistral", True, "mist_" + "a" * 40),
-    ("mistral", False, "mist_short"),
 ]
 
 AZURE_CASES = [

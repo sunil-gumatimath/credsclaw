@@ -18,7 +18,7 @@ from auditor.patterns import (
 from auditor.rate_limiter import SEARCH_QUOTA, RateLimiter
 from auditor.scoring import calculate_confidence_score
 from auditor.tracker import ProgressTracker
-from auditor.validator import validate_groq_key, validate_slack_key
+from auditor.validator import validate_openai_key, validate_slack_key
 
 
 def test_azure_connection_string_preserves_base64_padding():
@@ -149,8 +149,8 @@ def test_sarif_export_line_numbers_and_uri_formatting(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_groq_validator_uses_openai_compatible_endpoint():
-    """Groq validator must call https://api.groq.com/openai/v1/models."""
+async def test_openai_validator_uses_bearer_endpoint():
+    """OpenAI validator must GET /v1/models and send a Bearer token."""
     mock_resp = MagicMock()
     mock_resp.status = 200
     mock_resp.content_length = 500
@@ -160,10 +160,11 @@ async def test_groq_validator_uses_openai_compatible_endpoint():
     session.request.return_value.__aenter__ = AsyncMock(return_value=mock_resp)
     session.request.return_value.__aexit__ = AsyncMock(return_value=None)
 
-    result = await validate_groq_key("gsk_" + "a" * 32, session=session)
+    result = await validate_openai_key("sk-" + "a" * 48, session=session)
     assert result is True
     session.request.assert_called_once()
-    assert session.request.call_args[0][1] == "https://api.groq.com/openai/v1/models"
+    assert session.request.call_args[0][1] == "https://api.openai.com/v1/models"
+    assert session.request.call_args.kwargs["headers"]["Authorization"] == "Bearer sk-" + "a" * 48
 
 
 @pytest.mark.asyncio

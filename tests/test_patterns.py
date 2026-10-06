@@ -1,4 +1,4 @@
-"""Pattern matching tests — all 14 provider regex patterns."""
+"""Pattern matching tests — all 7 provider regex patterns."""
 
 import re
 
@@ -6,19 +6,29 @@ from auditor import (
     ANTHROPIC_KEY_PATTERN,
     AWS_ACCESS_KEY_PATTERN,
     AZURE_CONNECTION_STRING_PATTERN,
-    CLOUDFLARE_TOKEN_PATTERN,
     GITHUB_TOKEN_PATTERN,
     GOOGLE_AI_KEY_PATTERN,
-    GROQ_API_KEY_PATTERN,
-    HUGGINGFACE_KEY_PATTERN,
-    MISTRAL_API_KEY_PATTERN,
+    NON_VALIDATABLE_PROVIDERS,
     OPENAI_KEY_PATTERN,
-    OPENROUTER_API_KEY_PATTERN,
     PROVIDER_CONFIGS,
-    REPLICATE_API_TOKEN_PATTERN,
     SLACK_TOKEN_PATTERN,
-    TOGETHER_API_KEY_PATTERN,
+    VALIDATABLE_PROVIDERS,
+    VALIDATION_MAP,
 )
+
+
+# ~~~ Registry consistency ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~────
+def test_validatable_providers_match_validation_map():
+    """VALIDATABLE_PROVIDERS and the validator registries must not drift.
+
+    VALIDATABLE_PROVIDERS is documentation only (the scanner dispatches through
+    VALIDATION_MAP and skips NON_VALIDATABLE_PROVIDERS), so nothing would fail
+    at runtime if the two disagreed. Pin them together here.
+    """
+    registered = {display for display, _search, _pattern in PROVIDER_CONFIGS.values()}
+    assert VALIDATION_MAP.keys() == registered, "VALIDATION_MAP does not cover every provider"
+    assert registered == VALIDATABLE_PROVIDERS | NON_VALIDATABLE_PROVIDERS
+    assert not (VALIDATABLE_PROVIDERS & NON_VALIDATABLE_PROVIDERS)
 
 
 # ~~~ Anthropic ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -104,7 +114,6 @@ def test_search_prefixes_cover_matchable_prefixes():
         "ASCA",
     ]:
         assert prefix in aws_query
-    assert "cft_" in PROVIDER_CONFIGS["cloudflare"][1]
     assert "xoxp-" in PROVIDER_CONFIGS["slack"][1]
 
 
@@ -134,56 +143,6 @@ def test_github_token_boundaries():
 def test_valid_slack_token():
     token = "xoxb" + "-1234567890123-1234567890123-abcdefghijklmnopqrstuvwx"
     assert len(re.findall(SLACK_TOKEN_PATTERN, token)) == 1
-
-
-# ~~~ HuggingFace ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-def test_valid_huggingface_key():
-    assert len(re.findall(HUGGINGFACE_KEY_PATTERN, "hf_" + "a" * 34)) == 1
-
-
-# ~~~ Cloudflare ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-def test_valid_cloudflare_token():
-    assert len(re.findall(CLOUDFLARE_TOKEN_PATTERN, "cfk_" + "a" * 40 + "01234567")) == 1
-    assert len(re.findall(CLOUDFLARE_TOKEN_PATTERN, "cfut_" + "a" * 40 + "abcdef")) == 1
-    assert len(re.findall(CLOUDFLARE_TOKEN_PATTERN, "cfat_" + "a" * 40 + "89abcdef")) == 1
-    assert len(re.findall(CLOUDFLARE_TOKEN_PATTERN, "cft_" + "a" * 40 + "012345")) == 1
-    # Token body may contain underscores and hyphens
-    assert len(re.findall(CLOUDFLARE_TOKEN_PATTERN, "cfk_" + "a_b-c" * 10 + "01234567")) == 1
-
-
-# ~~~ Replicate ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-def test_valid_replicate_token():
-    assert len(re.findall(REPLICATE_API_TOKEN_PATTERN, "r8_" + "a" * 37)) == 1
-    assert len(re.findall(REPLICATE_API_TOKEN_PATTERN, "r8_" + "a" * 38)) == 1
-    assert len(re.findall(REPLICATE_API_TOKEN_PATTERN, "r8_" + "a" * 40)) == 1
-    assert len(re.findall(REPLICATE_API_TOKEN_PATTERN, "r8_" + "a" * 36)) == 0
-    assert len(re.findall(REPLICATE_API_TOKEN_PATTERN, "r8_" + "a" * 41)) == 0
-
-
-# ~~~ Groq ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-def test_valid_groq_key():
-    assert len(re.findall(GROQ_API_KEY_PATTERN, "gsk_" + "a" * 30)) == 1
-    assert len(re.findall(GROQ_API_KEY_PATTERN, "gsk_short")) == 0
-
-
-# ~~~ OpenRouter ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-def test_valid_openrouter_key():
-    assert len(re.findall(OPENROUTER_API_KEY_PATTERN, "sk-or-" + "a" * 40)) == 1
-    assert len(re.findall(OPENROUTER_API_KEY_PATTERN, "sk-or-short")) == 0
-
-
-# ~~~ Together AI ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-def test_valid_together_key():
-    assert len(re.findall(TOGETHER_API_KEY_PATTERN, "together_" + "a" * 30)) == 1
-    assert len(re.findall(TOGETHER_API_KEY_PATTERN, "together_" + "a-b-c-d" * 8 + "ab")) == 1
-    assert len(re.findall(TOGETHER_API_KEY_PATTERN, "together_short")) == 0
-
-
-# ~~~ Mistral AI ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-def test_valid_mistral_key():
-    assert len(re.findall(MISTRAL_API_KEY_PATTERN, "mist_" + "a" * 30)) == 1
-    assert len(re.findall(MISTRAL_API_KEY_PATTERN, "mist_" + "a-b-c-d" * 8 + "ab")) == 1
-    assert len(re.findall(MISTRAL_API_KEY_PATTERN, "mist_short")) == 0
 
 
 # ~~~ Azure ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

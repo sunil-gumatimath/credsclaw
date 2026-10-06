@@ -1,6 +1,6 @@
 # 🔍 CredsClaw
 
-> **Async Python CLI** that scans GitHub repositories, local directories, and git history for leaked API keys and secrets across **14 providers**. Features intelligent confidence scoring, deduplication, checkpoint/resume, and rich HTML reports.
+> **Async Python CLI** that scans GitHub repositories, local directories, and git history for leaked API keys and secrets across **7 providers**. Features intelligent confidence scoring, deduplication, checkpoint/resume, and rich HTML reports.
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](# )
 [![Tests](https://img.shields.io/badge/tests-passing-brightgreen)](# )
@@ -35,7 +35,7 @@
 | --- | --- |
 | **4 scan modes** | GitHub code search, commit messages, local directory, git history |
 | **Recent-repo discovery** | Auto-discover repos pushed to in last N days and scan them |
-| **14 provider patterns** | OpenAI, Anthropic, Google, AWS, GitHub, Slack, HuggingFace, Cloudflare, Azure, Replicate, Groq, OpenRouter, Together AI, Mistral AI |
+| **7 provider patterns** | OpenAI, Anthropic, Google, AWS, GitHub, Slack, Azure |
 | **Confidence scoring** | Multi-factor analysis: Shannon entropy, context keywords, noise handling, length, character diversity |
 | **Severity tiers** | CRITICAL (80+), HIGH (60-79), MEDIUM (40-59), LOW (<40) |
 | **Live validation** | Ping provider APIs to confirm whether discovered keys are still active; a reused secret is validated once and the verdict shared across its locations |
@@ -121,7 +121,7 @@ python -m auditor [options]
 # Scan a specific GitHub repository for OpenAI and AWS keys
 python -m auditor --repo owner/repo --providers openai,aws
 
-# Scan the current directory for all 14 provider patterns
+# Scan the current directory for all 7 provider patterns
 python -m auditor --mode local --dir . --providers all
 
 # Check your own git history for accidentally committed secrets
@@ -245,14 +245,7 @@ Formats verified against vendor documentation, October 2026. `tests/test_provide
 | **AWS** | 11 prefixes: `AKIA`, `ASIA`, `ABIA`, `ACCA`, `APKA`, `AIDA`, `AROA`, `AIPA`, `ANPA`, `AGPA`, `ASCA`, each + 16 uppercase alphanumerics | — |
 | **GitHub** | `ghp_` 36–40, `ghs_` 36–76, `gho_`/`ghr_`/`ghu_` fixed 36, `github_pat_` 22–30 + `_` + 59–100 | ✓ |
 | **Slack** | Classic `xox[baprsoecde]-` three-field tokens, app-level `xoxa-<app>-<team>-<app>-<secret>`, `xapp-`/`xwfp-` (24+ chars), `hooks.slack.com` webhooks | ✓* |
-| **HuggingFace** | `hf_` + 34–64 | ✓ |
-| **Cloudflare** | 2026 scannable prefixes `cfk_`, `cfut_`, `cfat_` (+ legacy `cft_`): 30–50 char body + mandatory 6–16 hex checksum | ✓ |
 | **Azure** | Connection strings (`Endpoint=sb://` or `DefaultEndpointsProtocol`; key material 32+ base64 chars with optional padding) | — |
-| **Replicate** | `r8_` + 37–40 alphanumerics | ✓ |
-| **Groq** | `gsk_` + 30–64 | ✓ |
-| **OpenRouter** | `sk-or-` + 30–70 (covers `sk-or-v1-`) | ✓ |
-| **Together AI** | `together_` + 30–64 | ✓ |
-| **Mistral AI** | `mist_` + 30–64 | ✓ |
 
 Live validatable providers ping their respective APIs to confirm whether the discovered key is still active. \*Slack webhook URLs (`hooks.slack.com`) are detected but never live-validated. Google AI, AWS, and Azure have no lightweight validation endpoint (an AWS access key ID can't be verified without its secret), so `--validate` skips them instead of issuing a request that can only return "unknown" — see `auditor.validator.NON_VALIDATABLE_PROVIDERS`.
 
@@ -429,7 +422,7 @@ repos:
 auditor/                        # Installable Python package
 ├── __init__.py                 # Package init, logging setup, re-exports
 ├── __main__.py                 # Entry point: argparse → dispatch → export
-├── patterns.py                 # 14 regex patterns, noise list, provider registry
+├── patterns.py                 # 7 regex patterns, noise list, provider registry
 ├── scoring.py                  # Shannon entropy, confidence scoring, severity, masking
 ├── scanner.py                  # APIAuditor class — all 4 scan modes
 ├── validator.py                # Live API validation (shared bearer helper + per-provider verdicts)
@@ -574,11 +567,7 @@ Use `--fail-on-findings` to exit with code 2 when any finding meets the confiden
 
 **Q: Which providers were removed?**
 
-Stripe, Twilio, SendGrid, and Supabase were removed. If you need them back, see the git history for their patterns and validators.
-
-**Q: What are the new AI hosting providers?**
-
-Replicate (`r8_` + 37–40 chars), Groq (`gsk_`), OpenRouter (`sk-or-`), Together AI (`together_`), and Mistral AI (`mist_`) — all with live validation support.
+Stripe, Twilio, SendGrid, and Supabase were removed in an earlier pass. HuggingFace, Cloudflare, Replicate, Groq, OpenRouter, Together AI, and Mistral AI were removed more recently. If you need any of them back, see the git history for their patterns and validators.
 
 ---
 

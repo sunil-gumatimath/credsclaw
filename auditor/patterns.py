@@ -1,4 +1,4 @@
-"""Regex patterns for detecting API keys and secrets across 14 providers.
+"""Regex patterns for detecting API keys and secrets across 7 providers.
 
 Key formats verified against vendor documentation, October 2026:
 
@@ -11,15 +11,10 @@ Key formats verified against vendor documentation, October 2026:
 * **Slack** — classic ``xoxb``/``xoxp``/``xoxr`` three-field tokens, app-level
   ``xoxa-<app>-<team>-<app>-<secret>`` tokens, and ``xapp-``/``xwfp-`` app
   tokens and ``hooks.slack.com`` webhooks.
-* **Cloudflare** — 2026 scannable prefixes ``cfk_``/``cfut_``/``cfat_``
-  (40-char body + checksum).
 * **Google** — ``AIza`` API keys and ``ya29.`` OAuth access tokens.
 * **AWS** — the 11 documented access-key-id prefixes, each + 16 uppercase
   alphanumerics.
 * **Azure** — storage / Service Bus connection strings.
-* **HuggingFace** — ``hf_`` user access tokens.
-* **Replicate** ``r8_``, **Groq** ``gsk_``, **OpenRouter** ``sk-or-``,
-  **Together AI** ``together_``, **Mistral** ``mist_``.
 """
 
 import re
@@ -63,24 +58,12 @@ SLACK_TOKEN_PATTERN = (
     r"xapp-[0-9a-zA-Z-]{24,}|xwfp-[0-9a-zA-Z-]{24,}|"
     r"hooks\.slack\.com/services/T[A-Za-z0-9]+/B[A-Za-z0-9]+/[A-Za-z0-9]+)\b"
 )
-HUGGINGFACE_KEY_PATTERN = r"\bhf_[A-Za-z0-9]{34,64}\b"
-# Cloudflare's scannable token format (2026-04): a 40-character body plus a
-# trailing checksum, behind one of four prefixes. Legacy unprefixed tokens
-# (37-45 hex chars / 40 alphanumerics) are intentionally not matched: they are
-# indistinguishable from ordinary hashes and would flood results with noise.
-CLOUDFLARE_TOKEN_PATTERN = r"\b(?:cfk_|cfut_|cfat_|cft_)[A-Za-z0-9_-]{30,50}[A-Fa-f0-9]{6,16}\b"
 AZURE_CONNECTION_STRING_PATTERN = (
     r"(?i)(?:Endpoint=sb://[^;]+;SharedAccessKeyName=[^;]+;"
     r"SharedAccessKey=[A-Za-z0-9+/]{32,}={0,2}(?=[^A-Za-z0-9+/=]|$)|"
     r"DefaultEndpointsProtocol=https?;AccountName=[^;]+;"
     r"AccountKey=[A-Za-z0-9+/]{32,}={0,2}(?=[^A-Za-z0-9+/=]|$))"
 )
-REPLICATE_API_TOKEN_PATTERN = r"\br8_[A-Za-z0-9]{37,40}\b"
-GROQ_API_KEY_PATTERN = r"\bgsk_[A-Za-z0-9_-]{30,64}\b"
-OPENROUTER_API_KEY_PATTERN = r"\bsk-or-[A-Za-z0-9_-]{30,70}\b"
-TOGETHER_API_KEY_PATTERN = r"\btogether_[A-Za-z0-9_-]{30,64}\b"
-MISTRAL_API_KEY_PATTERN = r"\bmist_[A-Za-z0-9_-]{30,64}\b"
-
 # ---------------------------------------------------------------------------
 # Noise / placeholder detection
 # ---------------------------------------------------------------------------
@@ -148,29 +131,19 @@ PROVIDER_CONFIGS = {
         "xox- OR xoxb- OR xoxp- OR xoxa- OR xoxr- OR xapp- OR xwfp- OR hooks.slack.com",
         SLACK_TOKEN_PATTERN,
     ),
-    "huggingface": ("HuggingFace", "hf_", HUGGINGFACE_KEY_PATTERN),
-    "cloudflare": ("Cloudflare", "cfk_ OR cfut_ OR cfat_ OR cft_", CLOUDFLARE_TOKEN_PATTERN),
     "azure": ("Azure", "Endpoint=sb OR DefaultEndpointsProtocol", AZURE_CONNECTION_STRING_PATTERN),
-    "replicate": ("Replicate", "r8_", REPLICATE_API_TOKEN_PATTERN),
-    "groq": ("Groq", "gsk_", GROQ_API_KEY_PATTERN),
-    "openrouter": ("OpenRouter", "sk-or-", OPENROUTER_API_KEY_PATTERN),
-    "together": ("Together AI", "together_", TOGETHER_API_KEY_PATTERN),
-    "mistral": ("Mistral AI", "mist_", MISTRAL_API_KEY_PATTERN),
 }
 
-# Provider names that support live validation
+# Provider names that support live validation.
+# The scanner resolves validators through auditor.validator.VALIDATION_MAP and
+# skips NON_VALIDATABLE_PROVIDERS, so this set is documentation of intent
+# rather than a dispatch table. tests/test_patterns.py asserts the two
+# registries agree, so drift fails the suite.
 VALIDATABLE_PROVIDERS = frozenset(
     {
         "OpenAI",
         "Anthropic",
         "GitHub",
         "Slack",
-        "HuggingFace",
-        "Cloudflare",
-        "Replicate",
-        "Groq",
-        "OpenRouter",
-        "Together AI",
-        "Mistral AI",
     }
 )

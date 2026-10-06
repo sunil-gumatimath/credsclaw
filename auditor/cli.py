@@ -130,7 +130,7 @@ Examples:
         "--providers",
         type=str,
         default="openai,anthropic",
-        help="Providers (comma-separated): openai,anthropic,google,aws,github,slack,huggingface,cloudflare,azure,replicate,groq,openrouter,together,mistral",
+        help="Providers (comma-separated): openai,anthropic,google,aws,github,slack,azure",
     )
     core.add_argument(
         "--repo",

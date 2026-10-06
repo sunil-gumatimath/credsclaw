@@ -21,13 +21,6 @@ ALLOWED_VALIDATION_HOSTS = frozenset(
         "api.anthropic.com",
         "api.github.com",
         "slack.com",
-        "huggingface.co",
-        "api.cloudflare.com",
-        "api.replicate.com",
-        "api.groq.com",
-        "openrouter.ai",
-        "api.together.xyz",
-        "api.mistral.ai",
     }
 )
 
@@ -41,27 +34,6 @@ def _assert_allowed_url(url: str) -> None:
         raise ValueError(f"Validation host not allowed: {host}")
     if not url.startswith("https://"):
         raise ValueError(f"Validation URL must be https: {url}")
-
-
-def _interpret_cloudflare(status: int, data: object) -> bool | None:
-    """Cloudflare returns HTTP 200 even for invalid tokens; read the body."""
-    if status in (401, 403):
-        return False
-    if status != 200:
-        # 429 and other unexpected codes stay "unknown".
-        return None
-    if not isinstance(data, dict):
-        return None
-    success = data.get("success")
-    if success is True:
-        return True
-    if success is False:
-        errors = data.get("errors") or []
-        err_str = json.dumps(errors).lower()
-        if "rate" in err_str or "429" in err_str:
-            return None
-        return False
-    return None
 
 
 async def _run_validation(
@@ -294,93 +266,6 @@ async def validate_slack_key(
         return None
 
 
-async def validate_huggingface_key(
-    key: str,
-    timeout: int = 10,
-    no_ssl_verify: bool = False,
-    session: aiohttp.ClientSession | None = None,
-) -> bool | None:
-    return await _validate_bearer(
-        "https://huggingface.co/api/whoami-v2", key, timeout, no_ssl_verify, session
-    )
-
-
-async def validate_cloudflare_key(
-    key: str,
-    timeout: int = 10,
-    no_ssl_verify: bool = False,
-    session: aiohttp.ClientSession | None = None,
-) -> bool | None:
-    url = "https://api.cloudflare.com/client/v4/user/tokens/verify"
-
-    async def _do(s: aiohttp.ClientSession) -> bool | None:
-        async with s.get(url, headers={"Authorization": f"Bearer {key}"}) as response:
-            if response.content_length is not None and response.content_length > 1_000_000:
-                return None
-            try:
-                data = await response.json()
-            except (json.JSONDecodeError, aiohttp.ContentTypeError):
-                data = None
-            return _interpret_cloudflare(response.status, data)
-
-    return await _run_validation(url, _do, timeout, no_ssl_verify, session, "Cloudflare")
-
-
-async def validate_replicate_key(
-    key: str,
-    timeout: int = 10,
-    no_ssl_verify: bool = False,
-    session: aiohttp.ClientSession | None = None,
-) -> bool | None:
-    return await _validate_bearer(
-        "https://api.replicate.com/v1/account", key, timeout, no_ssl_verify, session
-    )
-
-
-async def validate_groq_key(
-    key: str,
-    timeout: int = 10,
-    no_ssl_verify: bool = False,
-    session: aiohttp.ClientSession | None = None,
-) -> bool | None:
-    return await _validate_bearer(
-        "https://api.groq.com/openai/v1/models", key, timeout, no_ssl_verify, session
-    )
-
-
-async def validate_openrouter_key(
-    key: str,
-    timeout: int = 10,
-    no_ssl_verify: bool = False,
-    session: aiohttp.ClientSession | None = None,
-) -> bool | None:
-    return await _validate_bearer(
-        "https://openrouter.ai/api/v1/auth/key", key, timeout, no_ssl_verify, session
-    )
-
-
-async def validate_together_key(
-    key: str,
-    timeout: int = 10,
-    no_ssl_verify: bool = False,
-    session: aiohttp.ClientSession | None = None,
-) -> bool | None:
-    return await _validate_bearer(
-        "https://api.together.xyz/v1/models", key, timeout, no_ssl_verify, session
-    )
-
-
-async def validate_mistral_key(
-    key: str,
-    timeout: int = 10,
-    no_ssl_verify: bool = False,
-    session: aiohttp.ClientSession | None = None,
-) -> bool | None:
-    return await _validate_bearer(
-        "https://api.mistral.ai/v1/models", key, timeout, no_ssl_verify, session
-    )
-
-
 async def validate_aws_key(
     key: str,
     timeout: int = 10,
@@ -420,13 +305,6 @@ VALIDATION_MAP = {
     "Anthropic": validate_anthropic_key,
     "GitHub": validate_github_key,
     "Slack": validate_slack_key,
-    "HuggingFace": validate_huggingface_key,
-    "Cloudflare": validate_cloudflare_key,
-    "Replicate": validate_replicate_key,
-    "Groq": validate_groq_key,
-    "OpenRouter": validate_openrouter_key,
-    "Together AI": validate_together_key,
-    "Mistral AI": validate_mistral_key,
     "Google": validate_google_key,
     "AWS": validate_aws_key,
     "Azure": validate_azure_key,
