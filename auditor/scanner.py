@@ -620,6 +620,10 @@ class APIAuditor:
                     self.progress.add_key(key_data)
                     self._incr_stat(provider, repo)
                     keys_to_validate.append((key_data, key))
+                # Must match the other three scan modes. Without this the
+                # identifier is never recorded on the success path, so
+                # --resume re-fetches every file the checkpoint covers.
+                self.progress.mark_processed(identifier)
                 self._checkpoint_if_due()
 
         await self._run_item_loop(

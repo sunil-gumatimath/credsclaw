@@ -156,7 +156,7 @@ python -m auditor --repo owner/repo --providers all --validate
 | `--fail-on-severity` | (unset) | Exit with code 2 if findings reach this tier: `LOW`, `MEDIUM`, `HIGH`, `CRITICAL` |
 | `--config` | `auditor.yaml` | YAML configuration file path |
 | `--recent-repos-days` | (empty) | Discover repos pushed to in last N days (mode: `code`/`commits` only) |
-| `--resume` | off | Continue from previous checkpoint (without `--resume`/`--since-checkpoint`, an existing checkpoint file is deleted at startup; requesting a resume with no checkpoint warns and starts fresh) |
+| `--resume` | off | Continue from previous checkpoint (without `--resume`/`--since-checkpoint`, an existing checkpoint file is deleted at startup; requesting a resume with no checkpoint warns and starts fresh). All four scan modes record every processed identifier, so a resumed run skips files it already covered instead of re-fetching them |
 | `--checkpoint-file` | `output/progress.json` | Path to checkpoint file |
 | `--since-checkpoint` | off | Only process items newer than checkpoint timestamp |
 | `--checkpoint-interval` | `25` | Save checkpoint every N processed items |
