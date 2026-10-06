@@ -172,18 +172,23 @@ async def main() -> None:
                     raise ValueError("--dir is required for local mode")
                 if selected_configs:
                     provider_tasks.append(auditor.audit_local_tree(selected_configs, args.dir))
+            elif args.mode == "git-history":
+                if not args.dir:
+                    raise ValueError("--dir is required for git-history mode")
+                # One pass over the history with every provider pattern, rather
+                # than re-running `git log`/`git show` once per provider.
+                if selected_configs:
+                    provider_tasks.append(
+                        auditor.audit_git_history_combined(selected_configs, args.dir)
+                    )
 
             for name, search_term, pattern in selected_configs:
                 for suffix in suffix_chunks:
                     query = f"{search_term}{suffix}"
 
-                    if args.mode == "local":
+                    if args.mode in ("local", "git-history"):
                         # Already handled above as a single combined pass.
                         continue
-                    elif args.mode == "git-history":
-                        if not args.dir:
-                            raise ValueError("--dir is required for git-history mode")
-                        provider_tasks.append(auditor.audit_git_history(name, pattern, args.dir))
                     elif args.mode == "commits":
                         provider_tasks.append(auditor.audit_commit_messages(name, query, pattern))
                     else:

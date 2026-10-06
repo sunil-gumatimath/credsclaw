@@ -1018,15 +1018,169 @@ class APIAuditor:
         )
 
     async def audit_git_history(self, provider: str, pattern: str, directory: str) -> None:
-        """Scan local git commit history across all branches."""
-        logger.info("Auditing %s API keys in git history: %s", provider, directory)
+        """Scan local git commit history across all branches.
+
+        Thin wrapper over :meth:`audit_git_history_combined` so both entry
+        points share one implementation and cannot drift.
+        """
+        await self.audit_git_history_combined([(provider, "", pattern)], directory)
+
+    async def audit_git_history_combined(
+        self,
+        providers: list[tuple[str, str, str]],
+        directory: str,
+    ) -> None:
+        """Scan git history once, applying every provider pattern per commit.
+
+        The per-provider path re-ran ``git log --all`` and re-ran ``git show``
+        for every commit once *per provider*, so N providers cost N git log
+        invocations and (commits x N) git show subprocesses. This reads the
+        commit list and each diff once and applies all patterns to it.
+
+        *providers* is a list of ``(display_name, search_prefix, pattern)``
+        tuples, i.e. the values of :data:`auditor.patterns.PROVIDER_CONFIGS`.
+        Only the search prefix is ignored here; local scans match on pattern.
+
+        Findings, stats, checkpoints, and validation stay per provider, so
+        ``--providers`` semantics and ``--resume`` are unchanged.
+        """
+        if not providers:
+            return
+
+        logger.info(
+            "Auditing %s API keys in git history: %s",
+            ", ".join(entry[0] for entry in providers),
+            directory,
+        )
         dir_path = Path(directory).resolve()
         git_dir = dir_path / ".git"
         if not git_dir.is_dir():
             logger.error("Not a git repository: %s", directory)
             return
 
-        # Gather all commits via ``git log`` with security isolation
+        # One shared `git log` for all providers. Key extraction, findings, and
+        # checkpoints stay per provider.
+        commits = await self._git_log(dir_path)
+        if commits is None:
+            return
+        if not commits:
+            logger.info("No commits found in %s", directory)
+            return
+
+        if self.args.dry_run:
+            logger.info(
+                "[Dry run] %s items for %s",
+                len(commits),
+                ", ".join(entry[0] for entry in providers),
+            )
+            return
+
+        compiled = self._compile_providers(providers)
+        if not compiled:
+            return
+
+        # Keys are bucketed by provider index so validation stays grouped the
+        # way batch_validate_keys expects.
+        keys_to_validate: dict[int, list[tuple[dict[str, Any], str]]] = {}
+        processed_any = False
+
+        for commit in commits:
+            sha = commit["sha"]
+            if not re.fullmatch(r"[0-9a-fA-F]{7,40}", sha):
+                logger.warning("Invalid commit SHA: %s", sha)
+                continue
+
+            # Only fetch the diff if some provider still needs this commit.
+            targets = [
+                (idx, provider_name)
+                for idx, (provider_name, _rx) in enumerate(compiled)
+                if not self.progress.is_processed(f"{provider_name}/git-history/{sha}")
+            ]
+            if not targets:
+                continue
+
+            diff_text = await self._git_show(dir_path, sha)
+            if diff_text is None:
+                # Unreadable commit: mark it done for every provider that wanted
+                # it, so a resume does not retry a broken commit.
+                async with self.lock:
+                    for _idx, provider_name in targets:
+                        self.progress.mark_processed(f"{provider_name}/git-history/{sha}")
+                continue
+
+            for idx, provider_name in targets:
+                local_candidates = self.extract_candidates(diff_text, compiled[idx][1].pattern)
+
+                async with self.lock:
+                    bucket = keys_to_validate.setdefault(idx, [])
+                    for key, _context, confidence, severity, line_no, col_no in local_candidates:
+                        key_hash = fingerprint_key(key)
+                        key_data: dict[str, Any] = {
+                            "provider": provider_name,
+                            "key_hash": key_hash,
+                            "key_masked": mask_key(key),
+                            "repo": "local (git history)",
+                            "path": f"commit/{sha}",
+                            "url": f"file://{dir_path}",
+                            "commit": sha,
+                            "author": commit["author"],
+                            "date": commit["date"][:10],
+                            "message": commit["subject"][:120],
+                            "line": line_no,
+                            "column": col_no,
+                            "timestamp": safe_utc_now(),
+                            "confidence": round(confidence, 2),
+                            "severity": severity,
+                            "valid": None,
+                        }
+                        if self.args.store_raw_keys:
+                            key_data["key"] = key
+                        self.progress.add_key(key_data)
+                        self._incr_stat(provider_name, "local (git)")
+                        bucket.append((key_data, key))
+                    self.progress.mark_processed(f"{provider_name}/git-history/{sha}")
+                    self._checkpoint_if_due()
+            processed_any = True
+
+        if self.args.validate:
+            for idx, (provider_name, _rx) in enumerate(compiled):
+                bucket = keys_to_validate.get(idx, [])
+                if bucket:
+                    logger.info("Validating %s %s keys...", len(bucket), provider_name)
+                    await self.batch_validate_keys(bucket, provider_name)
+
+        if processed_any:
+            logger.info(
+                "Completed Git history: %s commit(s) across %s provider(s)",
+                len(commits),
+                len(compiled),
+            )
+        self.progress.save_progress()
+
+    @staticmethod
+    def _compile_providers(
+        providers: list[tuple[str, str, str]],
+    ) -> list[tuple[str, re.Pattern[str]]]:
+        """Pair each provider with its compiled pattern, skipping bad regexes.
+
+        Shared by the combined local and git-history scans so an uncompilable
+        pattern drops the provider (rather than misaligning indices) in both.
+        """
+        compiled: list[tuple[str, re.Pattern[str]]] = []
+        for provider_name, _search_prefix, pattern in providers:
+            try:
+                pattern_obj = _PATTERN_CACHE.get(pattern)
+                if pattern_obj is None:
+                    pattern_obj = re.compile(pattern)
+                    _PATTERN_CACHE[pattern] = pattern_obj
+            except re.error as exc:
+                logger.warning("Invalid regex pattern skipped: %s (%s)", pattern, exc)
+                continue
+            compiled.append((provider_name, pattern_obj))
+        return compiled
+
+    async def _git_log(self, dir_path: Path) -> list[dict[str, str]] | None:
+        """Return every commit on every branch, or None if git could not run."""
         try:
             process = await asyncio.create_subprocess_exec(
                 "git",
@@ -1050,21 +1204,17 @@ class APIAuditor:
                 process.kill()
                 await process.communicate()
                 logger.error("git log timed out (large repository?)")
-                return
+                return None
 
             if process.returncode != 0:
                 logger.error(
                     "git log failed: %s", stderr_bytes.decode("utf-8", errors="replace").strip()
                 )
-                return
+                return None
             raw_log = stdout_bytes.decode("utf-8", errors="replace").strip()
         except FileNotFoundError:
             logger.error("git executable not found on PATH")
-            return
-
-        if not raw_log:
-            logger.info("No commits found in %s", directory)
-            return
+            return None
 
         commits: list[dict[str, str]] = []
         for line in raw_log.splitlines():
@@ -1079,86 +1229,32 @@ class APIAuditor:
                         "subject": parts[4],
                     }
                 )
+        return commits
 
-        async def process_commit(
-            commit: dict[str, str],
-            keys_to_validate: list[tuple[dict[str, Any], str]],
-        ) -> None:
-            sha = commit["sha"]
-            if not re.fullmatch(r"[0-9a-fA-F]{7,40}", sha):
-                logger.warning("Invalid commit SHA: %s", sha)
-                return
-            identifier = f"{provider}/git-history/{sha}"
-
-            async with self.lock:
-                if self.progress.is_processed(identifier):
-                    return
-
+    async def _git_show(self, dir_path: Path, sha: str) -> str | None:
+        """Return one commit's diff, or None if it could not be read."""
+        try:
+            process = await asyncio.create_subprocess_exec(
+                "git",
+                "-c",
+                "core.fsmonitor=",
+                "-c",
+                "diff.external=",
+                "show",
+                "--no-ext-diff",
+                "--format=",
+                sha,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(dir_path),
+            )
             try:
-                process = await asyncio.create_subprocess_exec(
-                    "git",
-                    "-c",
-                    "core.fsmonitor=",
-                    "-c",
-                    "diff.external=",
-                    "show",
-                    "--no-ext-diff",
-                    "--format=",
-                    sha,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=str(dir_path),
-                )
-                try:
-                    stdout_bytes, _ = await asyncio.wait_for(process.communicate(), timeout=30)
-                except TimeoutError:
-                    process.kill()
-                    await process.communicate()
-                    logger.warning("git show timed out for %s", sha)
-                    async with self.lock:
-                        self.progress.mark_processed(identifier)
-                    return
-                diff_text = stdout_bytes.decode("utf-8", errors="replace")
-            except FileNotFoundError:
-                async with self.lock:
-                    self.progress.mark_processed(identifier)
-                return
-
-            local_candidates = self.extract_candidates(diff_text, pattern)
-
-            async with self.lock:
-                for key, _context, confidence, severity, line_no, col_no in local_candidates:
-                    key_hash = fingerprint_key(key)
-                    key_data: dict[str, Any] = {
-                        "provider": provider,
-                        "key_hash": key_hash,
-                        "key_masked": mask_key(key),
-                        "repo": "local (git history)",
-                        "path": f"commit/{sha}",
-                        "url": f"file://{dir_path}",
-                        "commit": sha,
-                        "author": commit["author"],
-                        "date": commit["date"][:10],
-                        "message": commit["subject"][:120],
-                        "line": line_no,
-                        "column": col_no,
-                        "timestamp": safe_utc_now(),
-                        "confidence": round(confidence, 2),
-                        "severity": severity,
-                        "valid": None,
-                    }
-                    if self.args.store_raw_keys:
-                        key_data["key"] = key
-                    self.progress.add_key(key_data)
-                    self._incr_stat(provider, "local (git)")
-                    keys_to_validate.append((key_data, key))
-                self.progress.mark_processed(identifier)
-                self._checkpoint_if_due()
-
-        await self._run_item_loop(
-            commits,
-            provider,
-            pattern,
-            process_commit,
-            description=f"Git history {provider}",
-        )
+                stdout_bytes, _ = await asyncio.wait_for(process.communicate(), timeout=30)
+            except TimeoutError:
+                process.kill()
+                await process.communicate()
+                logger.warning("git show timed out for %s", sha)
+                return None
+            return stdout_bytes.decode("utf-8", errors="replace")
+        except FileNotFoundError:
+            return None
