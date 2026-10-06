@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import base64
 import logging
 import subprocess
 import tempfile
@@ -11,6 +12,8 @@ from unittest.mock import patch
 import pytest
 
 from auditor import (
+    AWS_ACCESS_KEY_PATTERN,
+    GITHUB_TOKEN_PATTERN,
     OPENAI_KEY_PATTERN,
     APIAuditor,
     ProgressTracker,
@@ -206,7 +209,10 @@ def test_audit_git_history_dry_run(tmp_path, caplog):
     auditor = APIAuditor("", RateLimiter(), tracker, args)
     asyncio.run(auditor.audit_git_history("OpenAI", OPENAI_KEY_PATTERN, str(tmp_path)))
 
+    # --dry-run must not fetch diffs or write findings, but it still has to
+    # walk the history so the item count is reported.
     assert len(tracker.found_keys) == 0
+    assert any("items for OpenAI" in msg for msg in caplog.messages)
 
 
 def test_audit_git_history_with_actual_repo(tmp_path):
@@ -475,6 +481,311 @@ async def test_code_mode_resume_skips_already_processed_files(tmp_path):
     assert fetch_again.call_count == 0, "resumed scan re-fetched an already-processed file"
     # The finding is still remembered via the checkpoint, just not re-found.
     assert len(resumed.found_keys) == 1
+
+
+# ~~~ Code-mode content cache ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~──────────────
+def _multi_key_env():
+    """File content holding one key of each of three provider families."""
+    import string
+
+    valid = string.ascii_letters + string.digits
+    key = "sk-" + "".join(valid[(i * 17) % len(valid)] for i in range(48))
+    return (
+        f"OPENAI_API_KEY={key}\n"
+        "AWS_ACCESS_KEY_ID=" + "AKIA" + "0123456789ABCDEF\n"
+        "GITHUB_TOKEN=ghp_" + "a" * 36 + "\n"
+    )
+
+
+def _code_item(blob_sha="sha-v1"):
+    return {
+        "repository": {"full_name": "acme/app", "updated_at": "2026-01-01T00:00:00Z"},
+        "path": ".env",
+        "html_url": "https://github.com/acme/app/blob/main/.env",
+        "sha": blob_sha,
+    }
+
+
+def _stub_code_network(auditor, content_by_sha, state):
+    """Stub code search + contents API; count real fetches in *state*."""
+
+    async def fake_search(query, page=1):
+        return {"items": [_code_item(state["sha"])]} if page == 1 else None
+
+    async def fake_rate_limit_sync():
+        return None
+
+    async def fake_retry(url, headers=None):
+        state["fetches"] += 1
+        sha = state["sha"]
+        return {"content": base64.b64encode(content_by_sha[sha].encode()).decode()}
+
+    auditor.search_github_code = fake_search  # type: ignore[method-assign]
+    auditor._fetch_initial_rate_limit = fake_rate_limit_sync  # type: ignore[method-assign]
+    auditor.request_with_retry = fake_retry  # type: ignore[method-assign]
+
+
+THREE_PROVIDERS = [
+    ("OpenAI", "sk-", OPENAI_KEY_PATTERN),
+    ("AWS", "AKIA", AWS_ACCESS_KEY_PATTERN),
+    ("GitHub", "ghp_", GITHUB_TOKEN_PATTERN),
+]
+
+
+@pytest.mark.asyncio
+async def test_content_cache_fetches_shared_file_once(tmp_path):
+    """A file matched by 3 providers must be downloaded once, not 3 times.
+
+    Code search runs once per provider, so without a cache every file holding
+    several key types was re-fetched from the contents API (1000 req/hr).
+    """
+    content = _multi_key_env()
+    checkpoint = _unique_checkpoint(tmp_path)
+    args = _build_args(dry_run=False, confidence_threshold=40.0, checkpoint_file=str(checkpoint))
+    tracker = ProgressTracker(checkpoint_file=str(checkpoint))
+    auditor = APIAuditor("t", RateLimiter(), tracker, args)
+
+    state = {"sha": "sha-v1", "fetches": 0}
+    _stub_code_network(auditor, {"sha-v1": content}, state)
+
+    for name, term, pattern in THREE_PROVIDERS:
+        await auditor.audit_api_keys(name, term, pattern)
+
+    assert state["fetches"] == 1, f"expected 1 content fetch, got {state['fetches']}"
+    hits, misses, _entries = auditor.content_cache_stats()
+    assert (hits, misses) == (2, 1)
+    # All three secrets still found; the cache must not suppress findings.
+    assert len(tracker.found_keys) == 3
+    assert {f["provider"] for f in tracker.found_keys} == {"OpenAI", "AWS", "GitHub"}
+
+
+@pytest.mark.asyncio
+async def test_content_cache_refetches_when_blob_sha_changes(tmp_path):
+    """An edited file (new blob SHA) must be re-fetched, never served stale."""
+    old = _multi_key_env()
+    import string
+
+    valid = string.ascii_letters + string.digits
+    new_key = "sk-" + "".join(valid[(i * 17 + 9) % len(valid)] for i in range(48))
+    new = old.replace(old.split("=", 1)[1].splitlines()[0], new_key)
+
+    checkpoint = _unique_checkpoint(tmp_path)
+    args = _build_args(dry_run=False, confidence_threshold=40.0, checkpoint_file=str(checkpoint))
+    tracker = ProgressTracker(checkpoint_file=str(checkpoint))
+    auditor = APIAuditor("t", RateLimiter(), tracker, args)
+
+    state = {"sha": "sha-v1", "fetches": 0}
+    _stub_code_network(auditor, {"sha-v1": old, "sha-v2": new}, state)
+
+    providers = list(THREE_PROVIDERS)
+    for i, (name, term, pattern) in enumerate(providers):
+        if i == 2:
+            state["sha"] = "sha-v2"  # file edited between provider passes
+        await auditor.audit_api_keys(name, term, pattern)
+
+    assert state["fetches"] == 2, (
+        f"expected 2 fetches (one per distinct blob sha), got {state['fetches']}"
+    )
+    hits, misses, _ = auditor.content_cache_stats()
+    assert (hits, misses) == (1, 2)
+
+
+def test_content_cache_respects_entry_bound(tmp_path):
+    """The cache evicts to stay within its entry cap."""
+    auditor = APIAuditor(
+        "t",
+        RateLimiter(),
+        ProgressTracker(str(_unique_checkpoint(tmp_path))),
+        _build_args(),
+    )
+    auditor._content_cache_max_entries = 3
+    for i in range(10):
+        auditor._store_cached_content((f"repo{i}", "p", "s"), "x" * 100)
+    _hits, _misses, entries = auditor.content_cache_stats()
+    assert entries == 3
+
+
+def test_content_cache_respects_byte_budget(tmp_path):
+    """The cache evicts to stay within its character budget."""
+    auditor = APIAuditor(
+        "t",
+        RateLimiter(),
+        ProgressTracker(str(_unique_checkpoint(tmp_path))),
+        _build_args(),
+    )
+    auditor._content_cache_max_entries = 100
+    auditor._content_cache_max_chars = 250
+    for i in range(10):
+        auditor._store_cached_content((f"repo{i}", "p", "s"), "x" * 100)
+    _hits, _misses, entries = auditor.content_cache_stats()
+    assert auditor._content_cache_chars <= 250
+    assert entries == 2
+
+
+def test_content_cache_skips_oversized_entry(tmp_path):
+    """A file too large to cache is still returned, just not memoised."""
+    auditor = APIAuditor(
+        "t",
+        RateLimiter(),
+        ProgressTracker(str(_unique_checkpoint(tmp_path))),
+        _build_args(),
+    )
+    auditor._content_cache_max_chars = 1000
+    auditor._store_cached_content(("repo", "big", "s"), "y" * 5000)
+    _hits, _misses, entries = auditor.content_cache_stats()
+    assert entries == 0
+
+
+@pytest.mark.asyncio
+async def test_get_file_content_without_blob_sha_still_caches(tmp_path):
+    """A missing ``sha`` in the search result must not defeat the cache."""
+    checkpoint = _unique_checkpoint(tmp_path)
+    args = _build_args(dry_run=False, confidence_threshold=40.0, checkpoint_file=str(checkpoint))
+    tracker = ProgressTracker(checkpoint_file=str(checkpoint))
+    auditor = APIAuditor("t", RateLimiter(), tracker, args)
+
+    calls = []
+
+    async def fake_retry(url, headers=None):
+        calls.append(url)
+        return {"content": base64.b64encode(b"hello world").decode()}
+
+    auditor.request_with_retry = fake_retry  # type: ignore[method-assign]
+
+    first = await auditor.get_file_content("acme/app", "README.md")
+    second = await auditor.get_file_content("acme/app", "README.md")
+    assert first == second == "hello world"
+    assert len(calls) == 1
+
+
+# ~~~ Combined git-history scan ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~────────────
+def _git_repo_with_commits(tmp_path, n_commits, per_commit):
+    """Build a real git repo whose commits each carry *per_commit* file text."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "t@t.com"], cwd=str(tmp_path), capture_output=True
+    )
+    subprocess.run(["git", "config", "user.name", "T"], cwd=str(tmp_path), capture_output=True)
+    for i in range(n_commits):
+        (tmp_path / f"f{i}.env").write_text(per_commit(i), encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=str(tmp_path), capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-q", "-m", f"c{i}"], cwd=str(tmp_path), capture_output=True
+        )
+    return tmp_path
+
+
+def _count_git_spawns(monkeypatch):
+    """Patch the scanner's subprocess call; return a mutable {'log':n,'show':n}."""
+    import auditor.scanner as sc
+
+    real = sc.asyncio.create_subprocess_exec
+    counts = {"log": 0, "show": 0}
+
+    async def counting(prog, *rest, **kw):
+        if "log" in rest:
+            counts["log"] += 1
+        if "show" in rest:
+            counts["show"] += 1
+        return await real(prog, *rest, **kw)
+
+    monkeypatch.setattr(sc.asyncio, "create_subprocess_exec", counting)
+    return counts
+
+
+GIT_PROVIDERS = [
+    ("OpenAI", "", OPENAI_KEY_PATTERN),
+    ("AWS", "", AWS_ACCESS_KEY_PATTERN),
+    ("GitHub", "", GITHUB_TOKEN_PATTERN),
+]
+
+
+def _git_commit_body(seed):
+    import string
+
+    valid = string.ascii_letters + string.digits
+    key = "sk-" + "".join(valid[(i * 17 + seed) % len(valid)] for i in range(48))
+    return (
+        f"OPENAI_API_KEY={key}\n"
+        "AWS_ACCESS_KEY_ID=" + "AKIA" + "0123456789ABCDEF\n"
+        "GITHUB_TOKEN=ghp_" + "a" * 36 + "\n"
+    )
+
+
+@pytest.mark.asyncio
+async def test_git_history_all_runs_git_once_per_commit(tmp_path, monkeypatch):
+    """One `git log` and one `git show` per commit, regardless of provider count.
+
+    Regression: git-history re-ran the whole history once per provider, so
+    N providers meant N git log calls and (commits x N) git show subprocesses.
+    """
+    repo = _git_repo_with_commits(tmp_path, 5, _git_commit_body)
+    checkpoint = _unique_checkpoint(tmp_path)
+    args = _build_args(dry_run=False, confidence_threshold=40.0, checkpoint_file=str(checkpoint))
+    tracker = ProgressTracker(checkpoint_file=str(checkpoint))
+    auditor = APIAuditor("t", RateLimiter(), tracker, args)
+
+    counts = _count_git_spawns(monkeypatch)
+    await auditor.audit_git_history_combined(GIT_PROVIDERS, str(repo))
+
+    assert counts["log"] == 1, f"expected 1 git log, got {counts['log']}"
+    assert counts["show"] == 5, f"expected 5 git show (one per commit), got {counts['show']}"
+
+
+@pytest.mark.asyncio
+async def test_git_history_all_matches_per_provider_passes(tmp_path):
+    """The combined pass must find exactly what per-provider passes find."""
+    # Both passes read the SAME repo with independent checkpoint files, so the
+    # commit SHAs they report are directly comparable.
+    repo = _git_repo_with_commits(tmp_path, 4, _git_commit_body)
+
+    combined_cp = _unique_checkpoint(tmp_path, "combined.json")
+    combined_args = _build_args(
+        dry_run=False, confidence_threshold=40.0, checkpoint_file=str(combined_cp)
+    )
+    combined = ProgressTracker(checkpoint_file=str(combined_cp))
+    combined_auditor = APIAuditor("t", RateLimiter(), combined, combined_args)
+    await combined_auditor.audit_git_history_combined(GIT_PROVIDERS, str(repo))
+
+    sep_cp = _unique_checkpoint(tmp_path, "separate.json")
+    sep_args = _build_args(dry_run=False, confidence_threshold=40.0, checkpoint_file=str(sep_cp))
+    separate = ProgressTracker(checkpoint_file=str(sep_cp))
+    sep_auditor = APIAuditor("t", RateLimiter(), separate, sep_args)
+    for name, _prefix, pattern in GIT_PROVIDERS:
+        await sep_auditor.audit_git_history(name, pattern, str(repo))
+
+    def summary(tracker):
+        return sorted(
+            (f["provider"], f.get("commit"), f["occurrences"], f["confidence"])
+            for f in tracker.found_keys
+        )
+
+    assert combined.found_keys, "combined pass found nothing; fixture is broken"
+    assert summary(combined) == summary(separate)
+    assert len(combined.processed) == len(separate.processed)
+
+
+@pytest.mark.asyncio
+async def test_git_history_all_resume_skips_git_show(tmp_path, monkeypatch):
+    """A resumed git-history scan must not re-read commits it already covered."""
+    repo = _git_repo_with_commits(tmp_path, 3, _git_commit_body)
+    checkpoint = _unique_checkpoint(tmp_path)
+    args = _build_args(dry_run=False, confidence_threshold=40.0, checkpoint_file=str(checkpoint))
+
+    first = ProgressTracker(checkpoint_file=str(checkpoint))
+    first_auditor = APIAuditor("t", RateLimiter(), first, args)
+    await first_auditor.audit_git_history_combined(GIT_PROVIDERS, str(repo))
+    assert first.found_keys
+
+    resumed = ProgressTracker(checkpoint_file=str(checkpoint))
+    resumed_auditor = APIAuditor("t", RateLimiter(), resumed, args)
+    counts = _count_git_spawns(monkeypatch)
+    await resumed_auditor.audit_git_history_combined(GIT_PROVIDERS, str(repo))
+
+    assert counts["show"] == 0, f"resumed scan ran {counts['show']} git show subprocesses"
+    # Findings survive via the checkpoint even though nothing was re-read.
+    assert len(resumed.found_keys) == len(first.found_keys)
 
 
 # ~~~ Combined local tree scan ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~──────────────
